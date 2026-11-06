@@ -150,6 +150,12 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 #endif
                 Toggle("点击封面打开专辑", isOn: $settings.openAlbumOnArtworkClick)
+                #if os(iOS)
+                Toggle("左右滑动切歌", isOn: $settings.swipeToChangeTrack)
+                Text("左滑下一首，右滑上一首")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #endif
                 Toggle("显示歌词翻译", isOn: $settings.showLyricsTranslation)
                 Toggle("逐字歌词（卡拉OK）", isOn: $settings.verbatimLyrics)
                 Picker("日文歌词读音", selection: $settings.lyricsAnnotation) {
