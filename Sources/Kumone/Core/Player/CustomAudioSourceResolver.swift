@@ -49,7 +49,26 @@ enum CustomAudioSourceResolver {
         source: CustomAudioSource,
         quality: ThirdPartyAudioQuality
     ) async throws -> ResolvedAudioSource? {
-        guard source.enabled, !source.template.isEmpty else { return nil }
+        guard source.enabled else { return nil }
+
+        // 脚本音源：执行脚本取地址，按音质从高到低逐个试、自动降级。
+        if source.isScriptSource,
+           let script = source.script?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !script.isEmpty {
+            for lxQuality in quality.fallbackChain {
+                if let resolved = await LXScriptSourceRunner.shared.resolve(
+                    source: source,
+                    script: script,
+                    track: track,
+                    quality: lxQuality
+                ) {
+                    return resolved
+                }
+            }
+            return nil
+        }
+
+        guard !source.template.isEmpty else { return nil }
         let keyword = AudioSourceTrackMatcher.keyword(for: track)
         let urlString = source.template
             .replacingOccurrences(of: "{id}", with: String(track.id))

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// 第三方音源音质：导入音源解析时 `{quality}` 占位符的替换值。
@@ -27,6 +28,16 @@ enum ThirdPartyAudioQuality: String, CaseIterable, Identifiable, Sendable {
         case .hires24: return "hires"
         }
     }
+
+    /// 脚本音源调用时传给脚本的音质（LX 风格），按从高到低逐个试、自动降级。
+    var fallbackChain: [String] {
+        switch self {
+        case .kb128: return ["128k"]
+        case .kb320: return ["320k", "128k"]
+        case .flac: return ["flac", "320k", "128k"]
+        case .hires24: return ["flac24bit", "flac", "320k", "128k"]
+        }
+    }
 }
 
 /// 用户导入的第三方音源（与 Beans 的导入格式兼容：name / template / urlPath / headers / quality）。
@@ -44,6 +55,24 @@ struct CustomAudioSource: Identifiable, Codable, Hashable, Sendable {
     var quality: String = "320"
     var script: String?
     var enabled: Bool = true
+
+    /// 是否脚本音源（LX / Baka 风格 JS 脚本）：靠执行脚本取播放地址，不走 URL 模板。
+    var isScriptSource: Bool {
+        kind.lowercased().contains("script")
+            || script?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    /// 去重指纹：模板音源用模板，脚本音源用脚本内容的 MD5（跨启动稳定）。
+    var dedupKey: String {
+        if !template.isEmpty { return "template:\(template)" }
+        return "script:\(scriptFingerprint)"
+    }
+
+    var scriptFingerprint: String {
+        guard let script, !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+        let digest = Insecure.MD5.hash(data: Data(script.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, template, urlPath, headers, quality, script, enabled
@@ -99,7 +128,10 @@ final class CustomAudioSourceStore: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: Self.storageKey),
            let list = try? JSONDecoder().decode([CustomAudioSource].self, from: data) {
             var seen = Set<String>()
-            sources = list.filter { !$0.template.isEmpty && seen.insert($0.template).inserted }
+            sources = list.filter {
+                (!$0.template.isEmpty || !$0.scriptFingerprint.isEmpty)
+                    && seen.insert($0.dedupKey).inserted
+            }
         } else {
             sources = []
         }
@@ -111,11 +143,14 @@ final class CustomAudioSourceStore: ObservableObject {
         }
     }
 
-    /// 导入一批音源：模板相同的视为重复、跳过；返回实际新增的数量。
+    /// 导入一批音源：模板或脚本相同的视为重复、跳过；返回实际新增的数量。
     @discardableResult
     func add(_ newSources: [CustomAudioSource]) -> Int {
-        let existing = Set(sources.map(\.template))
-        let fresh = newSources.filter { !$0.template.isEmpty && !existing.contains($0.template) }
+        let existing = Set(sources.map(\.dedupKey))
+        let fresh = newSources.filter {
+            (!$0.template.isEmpty || !$0.scriptFingerprint.isEmpty)
+                && !existing.contains($0.dedupKey)
+        }
         guard !fresh.isEmpty else { return 0 }
         sources.append(contentsOf: fresh)
         return fresh.count
