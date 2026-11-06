@@ -4,12 +4,15 @@ enum AudioSourceID: String, CaseIterable, Hashable {
     case pyncmd
     case kugou
     case kuwo
+    /// 用户导入的第三方音源（统一开关；具体音源在第三方音源管理里增删）。
+    case custom
 
     var displayName: String {
         switch self {
         case .pyncmd: return "pyncmd"
         case .kugou: return String(localized: "酷狗音乐")
         case .kuwo: return String(localized: "酷我音乐")
+        case .custom: return String(localized: "自定义音源")
         }
     }
 }

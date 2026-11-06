@@ -19,10 +19,28 @@ enum UnblockService {
     static func resolve(
         _ track: Track,
         enabledSources: Set<AudioSourceID>,
-        excluding attemptedSources: Set<AudioSourceID>
+        excluding attemptedSources: Set<AudioSourceID>,
+        customSources: [CustomAudioSource] = [],
+        customQuality: ThirdPartyAudioQuality = .kb320
     ) async -> Resolution {
         var newlyAttemptedSources = Set<AudioSourceID>()
         guard !Task.isCancelled else { return Resolution(source: nil, attemptedSources: []) }
+
+        // 用户导入的音源优先：买来的高音质源先试，失败再走内置源。
+        if enabledSources.contains(.custom), !attemptedSources.contains(.custom) {
+            let enabled = customSources.filter(\.enabled)
+            if !enabled.isEmpty {
+                newlyAttemptedSources.insert(.custom)
+                if let resolved = await CustomAudioSourceResolver.resolveFirst(
+                    track: track,
+                    sources: enabled,
+                    quality: customQuality
+                ) {
+                    return Resolution(source: resolved, attemptedSources: newlyAttemptedSources)
+                }
+            }
+        }
+
         if enabledSources.contains(.pyncmd), !attemptedSources.contains(.pyncmd) {
             newlyAttemptedSources.insert(.pyncmd)
             do {

@@ -870,7 +870,9 @@ final class PlayerService: ObservableObject {
         let resolution = await UnblockService.resolve(
             track,
             enabledSources: enabledSources,
-            excluding: attemptedUnblockSources
+            excluding: attemptedUnblockSources,
+            customSources: CustomAudioSourceStore.shared.sources,
+            customQuality: SettingsManager.shared.thirdPartyQuality
         )
         attemptedUnblockSources.formUnion(resolution.attemptedSources)
         guard let unblocked = resolution.source else { return false }
