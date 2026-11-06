@@ -133,6 +133,7 @@ final class SettingsManager: ObservableObject {
         static let thirdPartyQuality = "settings.thirdPartyQuality"
         static let hapticsEnabled = "settings.hapticsEnabled"
         static let thirdPartyVIPReminder = "settings.thirdPartyVIPReminder"
+        static let swipeToChangeTrack = "settings.swipeToChangeTrack"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
         #if os(macOS)
@@ -276,6 +277,11 @@ final class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(thirdPartyVIPReminder, forKey: Keys.thirdPartyVIPReminder) }
     }
 
+    /// 播放页左右滑动切歌：左滑下一首，右滑上一首。关掉就只能点按钮切歌，默认开。
+    @Published var swipeToChangeTrack: Bool {
+        didSet { UserDefaults.standard.set(swipeToChangeTrack, forKey: Keys.swipeToChangeTrack) }
+    }
+
     /// Floating desktop lyrics window (LyricsX-style).
     @Published var showDesktopLyrics: Bool {
         didSet { UserDefaults.standard.set(showDesktopLyrics, forKey: Keys.desktopLyrics) }
@@ -407,6 +413,7 @@ final class SettingsManager: ObservableObject {
             .flatMap(ThirdPartyAudioQuality.init) ?? .kb320
         hapticsEnabled = defaults.object(forKey: Keys.hapticsEnabled) as? Bool ?? true
         thirdPartyVIPReminder = defaults.object(forKey: Keys.thirdPartyVIPReminder) as? Bool ?? true
+        swipeToChangeTrack = defaults.object(forKey: Keys.swipeToChangeTrack) as? Bool ?? true
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
         #if os(macOS)
