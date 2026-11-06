@@ -131,6 +131,8 @@ final class SettingsManager: ObservableObject {
         static let unblock = "settings.enableUnblock"
         static let unblockSources = "settings.enabledUnblockSources"
         static let thirdPartyQuality = "settings.thirdPartyQuality"
+        static let hapticsEnabled = "settings.hapticsEnabled"
+        static let thirdPartyVIPReminder = "settings.thirdPartyVIPReminder"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
         #if os(macOS)
@@ -264,6 +266,16 @@ final class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(thirdPartyQuality.rawValue, forKey: Keys.thirdPartyQuality) }
     }
 
+    /// 点播放/暂停、切歌、喜欢时给一下触感反馈。iOS 专属，默认开。
+    @Published var hapticsEnabled: Bool {
+        didSet { UserDefaults.standard.set(hapticsEnabled, forKey: Keys.hapticsEnabled) }
+    }
+
+    /// 第三方音源播会员歌时弹“已使用第三方音源：xxx”提醒。关掉就不弹，默认开。
+    @Published var thirdPartyVIPReminder: Bool {
+        didSet { UserDefaults.standard.set(thirdPartyVIPReminder, forKey: Keys.thirdPartyVIPReminder) }
+    }
+
     /// Floating desktop lyrics window (LyricsX-style).
     @Published var showDesktopLyrics: Bool {
         didSet { UserDefaults.standard.set(showDesktopLyrics, forKey: Keys.desktopLyrics) }
@@ -393,6 +405,8 @@ final class SettingsManager: ObservableObject {
         }
         thirdPartyQuality = defaults.string(forKey: Keys.thirdPartyQuality)
             .flatMap(ThirdPartyAudioQuality.init) ?? .kb320
+        hapticsEnabled = defaults.object(forKey: Keys.hapticsEnabled) as? Bool ?? true
+        thirdPartyVIPReminder = defaults.object(forKey: Keys.thirdPartyVIPReminder) as? Bool ?? true
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
         #if os(macOS)

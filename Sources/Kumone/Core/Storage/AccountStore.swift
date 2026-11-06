@@ -145,6 +145,7 @@ final class AccountStore: ObservableObject {
         let scope = offlineScope
         // Optimistic update
         if like { likedTrackIDs.insert(trackID) } else { likedTrackIDs.remove(trackID) }
+        Haptics.success()
         do {
             try await MusicAPI.likeTrack(id: trackID, like: like)
         } catch {
