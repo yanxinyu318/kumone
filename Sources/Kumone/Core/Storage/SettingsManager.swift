@@ -130,6 +130,7 @@ final class SettingsManager: ObservableObject {
         static let fmMode = "settings.fmMode"
         static let unblock = "settings.enableUnblock"
         static let unblockSources = "settings.enabledUnblockSources"
+        static let thirdPartyQuality = "settings.thirdPartyQuality"
         static let autoCheckUpdates = "settings.autoCheckUpdates"
         static let desktopLyrics = "settings.showDesktopLyrics"
         #if os(macOS)
@@ -256,6 +257,11 @@ final class SettingsManager: ObservableObject {
 
     var canResolveUnblockedTracks: Bool {
         enableUnblock && !enabledAudioSourceIDs.isEmpty
+    }
+
+    /// 导入的第三方音源解析时优先使用的音质（填进 URL 模板的 `{quality}`）。
+    @Published var thirdPartyQuality: ThirdPartyAudioQuality {
+        didSet { UserDefaults.standard.set(thirdPartyQuality.rawValue, forKey: Keys.thirdPartyQuality) }
     }
 
     /// Floating desktop lyrics window (LyricsX-style).
@@ -385,6 +391,8 @@ final class SettingsManager: ObservableObject {
         } else {
             enabledAudioSourceIDs = Set(AudioSourceID.allCases)
         }
+        thirdPartyQuality = defaults.string(forKey: Keys.thirdPartyQuality)
+            .flatMap(ThirdPartyAudioQuality.init) ?? .kb320
         autoCheckUpdates = defaults.object(forKey: Keys.autoCheckUpdates) as? Bool ?? true
         showDesktopLyrics = defaults.object(forKey: Keys.desktopLyrics) as? Bool ?? false
         #if os(macOS)
