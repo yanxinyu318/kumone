@@ -392,6 +392,7 @@ final class PlayerService: ObservableObject {
 
     func togglePlayPause() {
         guard let track = currentTrack else { return }
+        Haptics.tap()
         if isPlaying {
             pause()
             return
@@ -416,11 +417,13 @@ final class PlayerService: ObservableObject {
     }
 
     func next() {
+        Haptics.tap()
         advanceToNext(userInitiated: true)
     }
 
     func previous() {
         if isFMMode { return }
+        Haptics.tap()
         if progress > 4 || activeQueue.isEmpty {
             seek(to: 0)
             return
@@ -894,7 +897,9 @@ final class PlayerService: ObservableObject {
         )
         guard case .loaded = loadResult else { return false }
 
-        ToastCenter.shared.show(String(localized: "已使用第三方音源：\(unblocked.displayName)"))
+        if SettingsManager.shared.thirdPartyVIPReminder {
+            ToastCenter.shared.show(String(localized: "已使用第三方音源：\(unblocked.displayName)"))
+        }
         return true
     }
 

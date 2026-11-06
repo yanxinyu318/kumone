@@ -1153,7 +1153,7 @@ final class PlayerService: ObservableObject {
             + (resolved.isTrial ? "trial " : ""))
         scheduleAudioUnitReadback()
         unblockSource = resolved.unblockSource
-        if let source = resolved.unblockSource {
+        if let source = resolved.unblockSource, SettingsManager.shared.thirdPartyVIPReminder {
             ToastCenter.shared.show(String(localized: "已使用第三方音源：\(source)"))
         }
         if resolved.isTrial {
