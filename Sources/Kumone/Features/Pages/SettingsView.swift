@@ -6,6 +6,8 @@ import Combine
 struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsManager
     @EnvironmentObject private var account: AccountStore
+    @ObservedObject private var customSources = CustomAudioSourceStore.shared
+    @State private var showThirdPartyManager = false
     @Environment(\.openDestination) private var openDestination
     @Environment(\.dismiss) private var dismiss
     #if os(macOS)
@@ -80,6 +82,26 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("音源")
+                }
+            }
+
+            if settings.enableUnblock {
+                Section("第三方音源") {
+                    HStack {
+                        Text("第三方音源")
+                        Spacer()
+                        Text("\(customSources.sources.count) 个")
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("管理 / 导入音源") { showThirdPartyManager = true }
+                    Picker("第三方音源音质", selection: $settings.thirdPartyQuality) {
+                        ForEach(ThirdPartyAudioQuality.allCases) { quality in
+                            Text(quality.displayName).tag(quality)
+                        }
+                    }
+                    Text("会优先按所选音质解析第三方音源，不可用时会自动降级。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -235,6 +257,9 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showThirdPartyManager) {
+            ThirdPartySourceManagerSheet()
+        }
         .navigationDestination(for: SettingsPage.self) { page in
             Group {
                 switch page {
