@@ -60,6 +60,12 @@ struct SettingsView: View {
                 Text("无版权或下架歌曲将从已启用音源中匹配播放")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                #if os(iOS)
+                Toggle("触感反馈", isOn: $settings.hapticsEnabled)
+                Text("点播放/暂停、切歌、喜欢时震一下")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                #endif
             }
             #if os(macOS)
 
@@ -100,6 +106,10 @@ struct SettingsView: View {
                         }
                     }
                     Text("会优先按所选音质解析第三方音源，不可用时会自动降级。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle("第三方播放会员歌提醒", isOn: $settings.thirdPartyVIPReminder)
+                    Text("第三方音源播会员歌时，弹“已使用第三方音源”提醒")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
