@@ -20,6 +20,9 @@ struct NowPlayingView: View {
     #if os(iOS)
     @State private var loadedArtwork = CachedImageState()
     @State private var loadedArtworkColors: ArtworkColors = .fallback
+    @State private var swipeDragOffset: CGFloat = 0
+    @State private var swipeIsDragging = false
+    @State private var swipeResetPending = false
     #endif
     @State private var activeIndex: Int?
     @State private var isUserScrolling = false
@@ -638,7 +641,20 @@ struct NowPlayingView: View {
                     .transition(.opacity)
             } else {
                 VStack(spacing: 20) {
-                    artworkView(size: artworkDim)
+                    Group {
+                        if settings.swipeToChangeTrack {
+                            coverSwipeCarousel(size: artworkDim)
+                                .onTapGesture {
+                                    if settings.openAlbumOnArtworkClick,
+                                       let album = player.currentTrack?.album,
+                                       album.id > 0, !album.name.isEmpty {
+                                        onOpenDestination(.album(album.id))
+                                    }
+                                }
+                        } else {
+                            artworkView(size: artworkDim)
+                        }
+                    }
                     trackMetaView
                     MiniLyricsView {
                         withAnimation(AppAnimation.standard) {
@@ -836,7 +852,13 @@ struct NowPlayingView: View {
                     .contentShape(Rectangle())
                     .onTapGesture(perform: toggleMinimalLyrics)
 
-                artworkView(size: artworkDimension)
+                Group {
+                    if settings.swipeToChangeTrack {
+                        coverSwipeCarousel(size: artworkDimension)
+                    } else {
+                        artworkView(size: artworkDimension)
+                    }
+                }
                     .contentShape(Rectangle())
                     .onTapGesture(perform: toggleMinimalLyrics)
                     .accessibilityIdentifier("immersiveArtwork")
@@ -920,6 +942,129 @@ struct NowPlayingView: View {
                     isDownward ? translation.height : 0,
                     isDownward ? value.predictedEndTranslation.height : 0
                 )
+            }
+    }
+
+    // MARK: - 左右滑动切歌
+
+    /// 上一首 / 下一首的预览曲目：队列里按当前序号前后取，循环模式下会绕回。
+    /// FM 漫游没有确定的下一首，返回 nil（该方向回弹，不切歌）。
+    private func trackBeforeCurrent() -> Track? {
+        if player.isFMMode { return nil }
+        let queue = player.activeQueue
+        guard !queue.isEmpty, player.currentIndex >= 0 else { return nil }
+        var idx = player.currentIndex - 1
+        if idx < 0 {
+            guard player.repeatMode == .all else { return nil }
+            idx = queue.count - 1
+        }
+        return queue[idx]
+    }
+
+    private func trackAfterCurrent() -> Track? {
+        if player.isFMMode { return nil }
+        if let queued = player.playNextList.first { return queued }
+        let queue = player.activeQueue
+        guard !queue.isEmpty, player.currentIndex >= 0 else { return nil }
+        var idx = player.currentIndex + 1
+        if idx >= queue.count {
+            guard player.repeatMode == .all else { return nil }
+            idx = 0
+        }
+        return queue[idx]
+    }
+
+    private func artworkURL(for track: Track?) -> URL? {
+        track?.album.picUrl?.resizedImageURL(768)
+    }
+
+    private func carouselPage(url: URL?, size: CGFloat) -> some View {
+        CachedAsyncImage(url: url) {
+            Rectangle()
+                .fill(.white.opacity(0.06))
+                .overlay(
+                    Image(systemName: "music.note")
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(.white.opacity(0.3))
+                )
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: .black.opacity(0.45), radius: 36, y: 18)
+    }
+
+    /// 左右滑动切歌：上一首 / 当前 / 下一首三页横排，手指拖多远下一页跟进来多远，
+    /// 松手按拖动距离或速度决定切不切歌；没歌的方向有阻尼回弹。
+    /// 三页封面各自走 ImageCache 内存缓存加载，滑过去那页和切歌后中间那页是同一张图，
+    /// 所以落页再切歌时画面不动，不会歌名变了封面还拖几秒。
+    private func coverSwipeCarousel(size: CGFloat) -> some View {
+        let hasPrev = trackBeforeCurrent() != nil
+        let hasNext = trackAfterCurrent() != nil
+        return HStack(spacing: 0) {
+            carouselPage(url: artworkURL(for: trackBeforeCurrent()), size: size)
+                .frame(width: size)
+            carouselPage(url: currentArtworkURL, size: size)
+                .frame(width: size)
+            carouselPage(url: artworkURL(for: trackAfterCurrent()), size: size)
+                .frame(width: size)
+        }
+        .offset(x: -size + swipeDragOffset)
+        .frame(width: size, height: size)
+        .clipped()
+        .contentShape(Rectangle())
+        .gesture(coverSwipeGesture(pageWidth: size, hasPrev: hasPrev, hasNext: hasNext))
+        .scaleEffect(player.isPlaying ? 1 : 0.95)
+        .animation(AppAnimation.bouncy, value: player.isPlaying)
+    }
+
+    private func coverSwipeGesture(pageWidth: CGFloat, hasPrev: Bool, hasNext: Bool) -> some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                guard !swipeResetPending else { return }
+                let translation = value.translation
+                guard abs(translation.width) > abs(translation.height) * 0.6 else { return }
+                swipeIsDragging = true
+                var raw = translation.width
+                // 没歌的方向：阻尼回弹，拖不动。
+                if (raw < 0 && !hasNext) || (raw > 0 && !hasPrev) {
+                    raw *= 0.3
+                }
+                swipeDragOffset = raw
+            }
+            .onEnded { value in
+                swipeIsDragging = false
+                let translation = value.translation.width
+                let velocity = value.predictedEndTranslation.width
+                let threshold: CGFloat = 60
+                if (translation < -threshold || velocity < -250) && hasNext {
+                    // 左滑 -> 下一首：先弹簧落页，再切歌归零。
+                    swipeResetPending = true
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+                        swipeDragOffset = -pageWidth
+                    }
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        player.next()
+                        swipeResetPending = false
+                        swipeDragOffset = 0
+                    }
+                } else if (translation > threshold || velocity > 250) && hasPrev {
+                    // 右滑 -> 上一首：直接切到上一首（不走“进度 > 4 秒先回到开头”那套）。
+                    swipeResetPending = true
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+                        swipeDragOffset = pageWidth
+                    }
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        if let prev = trackBeforeCurrent() { player.playTrack(prev) }
+                        swipeResetPending = false
+                        swipeDragOffset = 0
+                    }
+                } else {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.76)) {
+                        swipeDragOffset = 0
+                    }
+                }
             }
     }
     #endif
