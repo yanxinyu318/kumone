@@ -1008,17 +1008,20 @@ struct NowPlayingView: View {
             carouselPage(url: artworkURL(for: trackAfterCurrent()), size: size)
                 .frame(width: size)
         }
+        // 三页横排的 HStack 宽 3*size。注意：.frame 默认把超宽的子视图居中，
+        // 不加 alignment 的话 offset -size 会停在右页（下一首的封面）上，
+        // 歌名却是当前这首——这就是封面错一位的根因（414 那版只修了归位，
+        // 没修这半页的偏差，所以还是错的）。这里把两层 frame 都写死：
+        // 内层定宽 3*size，外层定宽 size 且左对齐，-size + 拖动量就一定是中间页。
+        .frame(width: size * 3, height: size)
         .offset(x: -size + swipeDragOffset)
-        .frame(width: size, height: size)
+        .frame(width: size, height: size, alignment: .leading)
         .clipped()
         .contentShape(Rectangle())
         .gesture(coverSwipeGesture(pageWidth: size, hasPrev: hasPrev, hasNext: hasNext))
-        // 切歌后强制把轮播归位到中间页。根因：落页弹簧的动画事务会把
-        // 延时 Task 里那句 swipeDragOffset = 0 盖掉，offset 停在 -pageWidth，
-        // 画面就停在右页（下一首的封面）上，歌名却已是当前这首，封面错一位。
-        // 这里跟住 currentTrack 变来归位，用 .none 明确取消动画，
-        // 不管切歌从哪来（滑动、按钮、列表点歌、自动连播）都不会错位。
-        // 拖动进行中不归位，免得自动连播打断正在拖的手。
+        // 切歌后强制把轮播归位到中间页：跟住 currentTrack 变来归位，
+        // 用 .none 明确取消动画，不管切歌从哪来（滑动、按钮、列表点歌、
+        // 自动连播）都不会错位。拖动进行中不归位，免得自动连播打断正在拖的手。
         .onChange(of: player.currentTrack?.id) { _ in
             guard !swipeIsDragging else { return }
             swipeResetPending = false
