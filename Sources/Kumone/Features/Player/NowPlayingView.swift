@@ -1013,6 +1013,19 @@ struct NowPlayingView: View {
         .clipped()
         .contentShape(Rectangle())
         .gesture(coverSwipeGesture(pageWidth: size, hasPrev: hasPrev, hasNext: hasNext))
+        // 切歌后强制把轮播归位到中间页。根因：落页弹簧的动画事务会把
+        // 延时 Task 里那句 swipeDragOffset = 0 盖掉，offset 停在 -pageWidth，
+        // 画面就停在右页（下一首的封面）上，歌名却已是当前这首，封面错一位。
+        // 这里跟住 currentTrack 变来归位，用 .none 明确取消动画，
+        // 不管切歌从哪来（滑动、按钮、列表点歌、自动连播）都不会错位。
+        // 拖动进行中不归位，免得自动连播打断正在拖的手。
+        .onChange(of: player.currentTrack?.id) { _ in
+            guard !swipeIsDragging else { return }
+            swipeResetPending = false
+            withAnimation(.none) {
+                swipeDragOffset = 0
+            }
+        }
         .scaleEffect(player.isPlaying ? 1 : 0.95)
         .animation(AppAnimation.bouncy, value: player.isPlaying)
     }
