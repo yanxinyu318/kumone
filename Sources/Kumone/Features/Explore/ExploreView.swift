@@ -41,17 +41,21 @@ final class ExploreViewModel: ObservableObject {
         case "排行榜":
             if let lists = try? await MusicAPI.toplists() {
                 toplists = lists
+                prefetchCovers(urls: lists.compactMap { $0.coverImgUrl?.resizedImageURL(256) })
             }
             hasMore = false
         case "推荐歌单":
             if let result = try? await MusicAPI.personalizedPlaylists(limit: 100) {
                 playlists = result
+                prefetchCovers(for: result)
             }
             hasMore = false
         case "精品歌单":
             if let result = try? await MusicAPI.highQualityPlaylists(before: highQualityBefore) {
                 let existing = Set(playlists.map(\.id))
-                playlists += result.playlists.filter { !existing.contains($0.id) }
+                let fresh = result.playlists.filter { !existing.contains($0.id) }
+                playlists += fresh
+                prefetchCovers(for: fresh)
                 highQualityBefore = result.lasttime ?? 0
                 hasMore = result.more ?? false
             } else {
@@ -63,11 +67,34 @@ final class ExploreViewModel: ObservableObject {
                 category: cat == "全部" ? "全部" : cat, offset: offset
             ) {
                 let existing = Set(playlists.map(\.id))
-                playlists += result.playlists.filter { !existing.contains($0.id) }
+                let fresh = result.playlists.filter { !existing.contains($0.id) }
+                playlists += fresh
+                prefetchCovers(for: fresh)
                 offset += 50
                 hasMore = (result.more ?? false) && offset < 500
             } else {
                 hasMore = false
+            }
+        }
+    }
+
+    /// Warm the image cache in the background as soon as a page of playlists
+    /// arrives, so covers are already decoded when their cards scroll into
+    /// view. Without this, 50 cards race the CDN at once on a slow network
+    /// and most of them sit on the grey placeholder.
+    private func prefetchCovers(for playlists: [PlaylistSummary]) {
+        prefetchCovers(urls: playlists.compactMap { $0.coverURL?.resizedImageURL(384) })
+    }
+
+    private func prefetchCovers(urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            await withTaskGroup(of: Void.self) { group in
+                for url in urls {
+                    group.addTask {
+                        _ = await ImageCache.shared.image(for: url)
+                    }
+                }
             }
         }
     }

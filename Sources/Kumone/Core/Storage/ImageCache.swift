@@ -271,9 +271,17 @@ struct CachedAsyncImage<Placeholder: View>: View {
                 imageState = CachedImageState(url: url, image: memoryHit)
             }
             guard memoryHit == nil else { return }
-            let cached = await ImageCache.shared.image(for: url) { preview in
+            var cached = await ImageCache.shared.image(for: url) { preview in
                 guard !Task.isCancelled else { return }
                 imageState.finish(preview, for: url)
+            }
+            // One retry for a flaky network: the first attempt can fail while
+            // the CDN is slow, and without this the card sits on the grey
+            // placeholder until the view is recreated.
+            if cached == nil, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard !Task.isCancelled else { return }
+                cached = await ImageCache.shared.image(for: url)
             }
             guard !Task.isCancelled, let cached else { return }
             imageState.finish(cached, for: url)
