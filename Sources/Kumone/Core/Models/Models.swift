@@ -480,11 +480,13 @@ extension String {
     func resizedImageURL(_ size: Int) -> URL? {
         guard var components = URLComponents(string: self) else { return nil }
         if components.scheme == "http" { components.scheme = "https" }
-        // Replacing a previous size keeps the CDN and local decoder in sync;
-        // appending a second `param` can leave the original large size active.
-        var items = components.queryItems?.filter { $0.name != "param" } ?? []
-        items.append(URLQueryItem(name: "param", value: "\(size)y\(size)"))
-        components.queryItems = items
+        // Drop every existing query item and keep only `param`. Playlist
+        // covers often arrive with imageView/thumbnail/watermark directives;
+        // keeping those alongside `param` makes the CDN reject the request
+        // (HTTP 400, JSON error) or ignore the resize and return the
+        // full-size image, so the card sits on the placeholder forever.
+        // `param` alone is the CDN's canonical resize mechanism.
+        components.queryItems = [URLQueryItem(name: "param", value: "\(size)y\(size)")]
         return components.url
     }
 }
