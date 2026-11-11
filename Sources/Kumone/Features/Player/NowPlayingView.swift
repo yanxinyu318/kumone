@@ -28,6 +28,9 @@ struct NowPlayingView: View {
     @State private var isUserScrolling = false
     @State private var showLyricsOnMobile = false
     @State private var showQueueOnMobile = false
+    #if os(iOS)
+    @State private var showSoundEffects = false
+    #endif
 
     var body: some View {
         GeometryReader { geo in
@@ -75,18 +78,28 @@ struct NowPlayingView: View {
             #endif
             .overlay(alignment: .topTrailing) {
                 if isCompact, showsClassicChrome(isCompact: isCompact) {
-                    Button {
-                        withAnimation(AppAnimation.standard) {
-                            showLyricsOnMobile.toggle()
+                    HStack(spacing: 8) {
+                        #if os(iOS)
+                        SoundEffectsButton(
+                            action: { showSoundEffects = true },
+                            diameter: 36,
+                            glyphSize: 14
+                        )
+                        #endif
+
+                        Button {
+                            withAnimation(AppAnimation.standard) {
+                                showLyricsOnMobile.toggle()
+                            }
+                        } label: {
+                            Image(systemName: showLyricsOnMobile ? "music.note" : "quote.bubble")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(showLyricsOnMobile ? Theme.accent : .white.opacity(0.85))
+                                .frame(width: 36, height: 36)
+                                .background(.white.opacity(0.12), in: Circle())
                         }
-                    } label: {
-                        Image(systemName: showLyricsOnMobile ? "music.note" : "quote.bubble")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(showLyricsOnMobile ? Theme.accent : .white.opacity(0.85))
-                            .frame(width: 36, height: 36)
-                            .background(.white.opacity(0.12), in: Circle())
+                        .buttonStyle(.pressable)
                     }
-                    .buttonStyle(.pressable)
                     .padding(.top, 20)
                     .padding(.trailing, 20)
                 }
@@ -112,6 +125,10 @@ struct NowPlayingView: View {
         #endif
         .preferredColorScheme(.dark)
         #if os(iOS)
+        .soundEffectsPresentation(
+            isPresented: $showSoundEffects,
+            settings: settings
+        )
         .modifier(OfflinePlaybackAlert(player: player, onDownloads: { onOpenDestination(.downloaded) },
             enabled: player.showNowPlaying && !(settings.nowPlayingMode == .minimal && showQueueOnMobile)))
         .modifier(MeteredDownloadAlert(enabled: player.showNowPlaying && !(settings.nowPlayingMode == .minimal && showQueueOnMobile)))
@@ -337,6 +354,8 @@ struct NowPlayingView: View {
     private var landscapeUtilityRow: some View {
         HStack(spacing: 10) {
             Spacer(minLength: 0)
+
+            SoundEffectsButton(action: { showSoundEffects = true })
 
             circleButton(
                 icon: "list.bullet", size: 15,
@@ -622,7 +641,7 @@ struct NowPlayingView: View {
             VStack(spacing: 12) {
                 NowPlayingScrubber()
                     .padding(.horizontal, 24)
-                controls
+                controls()
             }
             .padding(.bottom, 24)
             #endif
@@ -668,7 +687,7 @@ struct NowPlayingView: View {
             VStack(spacing: 12) {
                 NowPlayingScrubber()
                     .padding(.horizontal, 24)
-                controls
+                controls()
             }
             .padding(.bottom, 24)
         }
@@ -743,7 +762,8 @@ struct NowPlayingView: View {
                 showsLyrics: showLyricsOnMobile,
                 showsQueue: showQueueOnMobile,
                 onToggleLyrics: toggleImmersiveLyrics,
-                onToggleQueue: toggleImmersiveQueue
+                onToggleQueue: toggleImmersiveQueue,
+                onOpenSoundEffects: { showSoundEffects = true }
             )
         }
         .padding(.top, 14)
@@ -839,6 +859,7 @@ struct NowPlayingView: View {
                 Color.clear
                 MinimalTrackInfoRow(
                     onOpenDestination: onOpenDestination,
+                    onOpenSoundEffects: { showSoundEffects = true },
                     metadataOnly: true
                 )
                     .padding(.top, NowPlayingPresentationMetrics.immersiveHeaderTopInset)
@@ -893,12 +914,16 @@ struct NowPlayingView: View {
     private var minimalControls: some View {
         VStack(spacing: 22) {
             ZStack {
-                MinimalTrackInfoRow(onOpenDestination: onOpenDestination)
+                MinimalTrackInfoRow(
+                    onOpenDestination: onOpenDestination,
+                    onOpenSoundEffects: { showSoundEffects = true }
+                )
                     .opacity(showLyricsOnMobile ? 0 : 1)
                     .allowsHitTesting(!showLyricsOnMobile)
                     .accessibilityHidden(showLyricsOnMobile)
                 MinimalTrackInfoRow(
                     onOpenDestination: onOpenDestination,
+                    onOpenSoundEffects: { showSoundEffects = true },
                     actionsOnly: true
                 )
                     .opacity(showLyricsOnMobile ? 1 : 0)
@@ -1188,7 +1213,7 @@ struct NowPlayingView: View {
             VStack(spacing: 14) {
                 NowPlayingScrubber()
                     .frame(maxWidth: 380)
-                controls
+                controls(showsSoundEffects: true)
             }
 
             Spacer()
@@ -1196,7 +1221,7 @@ struct NowPlayingView: View {
         .padding(.trailing, hasLyricsColumn ? 30 : 0)
     }
 
-    private var controls: some View {
+    private func controls(showsSoundEffects: Bool = false) -> some View {
         // Equal-width slots so the row always fits the screen: fixed-size
         // buttons in a plain HStack summed wider than a phone (≈430pt with the
         // like button), overflowing the layout and shoving the overlays and
@@ -1264,6 +1289,17 @@ struct NowPlayingView: View {
 
             RoutePickerButton(diameter: 40, glyphSize: 15)
                 .frame(maxWidth: .infinity)
+
+            #if os(iOS)
+            if showsSoundEffects {
+                SoundEffectsButton(
+                    action: { showSoundEffects = true },
+                    diameter: 40,
+                    glyphSize: 15
+                )
+                .frame(maxWidth: .infinity)
+            }
+            #endif
 
             if player.isFMMode {
                 Image(systemName: "wave.3.right.circle.fill")
@@ -2012,6 +2048,7 @@ private struct CompactSecondaryControls: View {
     let showsQueue: Bool
     let onToggleLyrics: () -> Void
     let onToggleQueue: () -> Void
+    let onOpenSoundEffects: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
@@ -2023,6 +2060,13 @@ private struct CompactSecondaryControls: View {
 
             RoutePickerButton(diameter: 44, glyphSize: 17)
                 .frame(maxWidth: .infinity)
+
+            SoundEffectsButton(
+                action: onOpenSoundEffects,
+                diameter: 44,
+                glyphSize: 17
+            )
+            .frame(maxWidth: .infinity)
 
             secondaryButton(
                 icon: volumeIcon,
@@ -2059,7 +2103,7 @@ private struct CompactSecondaryControls: View {
 
     private func secondaryButton(
         icon: String,
-        label: String,
+        label: LocalizedStringKey,
         isActive: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
@@ -2170,7 +2214,7 @@ private struct CompactQueueContent: View {
 
     private func modeButton(
         icon: String,
-        label: String,
+        label: LocalizedStringKey,
         isActive: Bool,
         action: @escaping () -> Void
     ) -> some View {
@@ -2574,6 +2618,7 @@ private struct MinimalTrackInfoRow: View {
     @State private var showAddToPlaylist = false
     @State private var airPlayRequest = 0
     let onOpenDestination: (Destination) -> Void
+    let onOpenSoundEffects: () -> Void
     var metadataOnly = false
     var actionsOnly = false
 
@@ -2587,6 +2632,12 @@ private struct MinimalTrackInfoRow: View {
                     HStack {
                         favoriteButton(for: track)
                         Spacer()
+                        SoundEffectsButton(
+                            action: onOpenSoundEffects,
+                            diameter: 44,
+                            glyphSize: 18,
+                            showsBackground: false
+                        )
                         moreMenu(for: track)
                     }
                 }
@@ -2597,6 +2648,12 @@ private struct MinimalTrackInfoRow: View {
 
                     if let track = player.currentTrack {
                         favoriteButton(for: track)
+                        SoundEffectsButton(
+                            action: onOpenSoundEffects,
+                            diameter: 44,
+                            glyphSize: 18,
+                            showsBackground: false
+                        )
                         moreMenu(for: track)
                     }
                 }
@@ -2810,7 +2867,7 @@ private struct MinimalTransportControls: View {
             : .white.opacity(0.88)
     }
 
-    private var playbackModeLabel: String {
+    private var playbackModeLabel: LocalizedStringKey {
         if player.shuffleEnabled { return "随机播放" }
         switch player.repeatMode {
         case .off: return "顺序播放"
