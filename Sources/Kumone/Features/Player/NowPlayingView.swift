@@ -1818,6 +1818,7 @@ private struct CompactTrackHeader: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
     @State private var showAddToPlaylist = false
+    @State private var commentsTrack: Track?
 
     let showsExpandedArtwork: Bool
     let onOpenDestination: (Destination) -> Void
@@ -1885,6 +1886,10 @@ private struct CompactTrackHeader: View {
 
                     Menu {
                         TrackDownloadActions(track: track, showsIcons: true)
+                        TrackBlacklistMenu(track: track, showsIcons: true)
+                        SongCommentsMenuButton(track: track, showsIcons: true) {
+                            commentsTrack = track
+                        }
                         Divider()
                         Button {
                             player.addToPlayNext(track)
@@ -1932,6 +1937,9 @@ private struct CompactTrackHeader: View {
             if let track = player.currentTrack {
                 AddToPlaylistSheet(track: track)
             }
+        }
+        .sheet(item: $commentsTrack) { track in
+            SongCommentsView(track: track)
         }
     }
 }
@@ -2616,6 +2624,7 @@ private struct MinimalTrackInfoRow: View {
     @EnvironmentObject private var player: PlayerService
     @EnvironmentObject private var account: AccountStore
     @State private var showAddToPlaylist = false
+    @State private var commentsTrack: Track?
     @State private var airPlayRequest = 0
     let onOpenDestination: (Destination) -> Void
     let onOpenSoundEffects: () -> Void
@@ -2663,6 +2672,9 @@ private struct MinimalTrackInfoRow: View {
             if let track = player.currentTrack {
                 AddToPlaylistSheet(track: track)
             }
+        }
+        .sheet(item: $commentsTrack) { track in
+            SongCommentsView(track: track)
         }
     }
 
@@ -2712,6 +2724,10 @@ private struct MinimalTrackInfoRow: View {
     private func moreMenu(for track: Track) -> some View {
         Menu {
             TrackDownloadActions(track: track, showsIcons: true)
+            TrackBlacklistMenu(track: track, showsIcons: true)
+            SongCommentsMenuButton(track: track, showsIcons: true) {
+                commentsTrack = track
+            }
             Divider()
             Button {
                 airPlayRequest += 1
