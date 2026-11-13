@@ -222,6 +222,11 @@ final class PlayerService: ObservableObject {
         let enabledSourceIDs: Set<AudioSourceID>
         let allowsUnblock: Bool
 
+        /// Main-actor: `SettingsManager`'s settings live on the main actor,
+        /// and this struct (unlike the enclosing `@MainActor` class) does not
+        /// inherit that isolation — without this annotation the compiler
+        /// rejects the reads below (build #12 failed on exactly this).
+        @MainActor
         func matchesCurrentSettings() -> Bool {
             quality == SettingsManager.shared.audioQuality.rawValue
                 && thirdPartyQuality == SettingsManager.shared.thirdPartyQuality
