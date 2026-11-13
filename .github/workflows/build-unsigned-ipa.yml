@@ -11,7 +11,7 @@ permissions:
 
 env:
   APP_NAME: Kumone
-  VERSION: "0.3.32"
+  VERSION: "0.3.34"
 
 jobs:
   ios:
