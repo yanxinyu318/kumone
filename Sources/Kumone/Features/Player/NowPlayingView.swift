@@ -23,6 +23,9 @@ struct NowPlayingView: View {
     @State private var swipeDragOffset: CGFloat = 0
     @State private var swipeIsDragging = false
     @State private var swipeResetPending = false
+    /// Set once a drag passes the cut-over threshold and its target's URL
+    /// has been warmed; reset on release so the next drag warms again.
+    @State private var swipeWarmed = false
     #endif
     @State private var activeIndex: Int?
     @State private var isUserScrolling = false
@@ -1071,9 +1074,21 @@ struct NowPlayingView: View {
                     raw *= 0.3
                 }
                 swipeDragOffset = raw
+                // 拖过切歌阈值就先把目标那首的链接取好：松手落页的 0.35 秒里
+                // 链接大概率已经到了，切歌时直接播，不用再等现取。
+                if !swipeWarmed, abs(raw) > 60 {
+                    if raw < 0, hasNext, let next = trackAfterCurrent() {
+                        player.warmUpTrack(next)
+                        swipeWarmed = true
+                    } else if raw > 0, hasPrev, let prev = trackBeforeCurrent() {
+                        player.warmUpTrack(prev)
+                        swipeWarmed = true
+                    }
+                }
             }
             .onEnded { value in
                 swipeIsDragging = false
+                swipeWarmed = false
                 let translation = value.translation.width
                 let velocity = value.predictedEndTranslation.width
                 let threshold: CGFloat = 60
