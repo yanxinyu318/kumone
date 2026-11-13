@@ -197,6 +197,41 @@ final class PlayerService: ObservableObject {
     private var scrobbled = false
     private var startScrobbled = false
 
+    // MARK: - Next-track URL warm-up (custom: skip latency)
+
+    /// One warmed-up playable URL for a single track: the result of the same
+    /// resolution chain playback uses (official API, then third-party script
+    /// sources on refusal/trial), held in memory so a manual skip does not
+    /// pay for it after the tap. Only the URL is fetched — no audio bytes —
+    /// so the warm-up costs a few KB on any network, unlike the full-file
+    /// queue prefetcher, which only runs on unmetered Wi-Fi and never warms
+    /// VIP songs (its resolver only asks the official API).
+    private struct WarmedSource {
+        let trackID: Int
+        let url: URL
+        let isTrial: Bool
+        let durationMS: Int?
+        let servedQuality: String?
+        let unblockSourceID: AudioSourceID?
+        let unblockDisplayName: String?
+        /// Settings the resolution was done under. A warmed URL is only
+        /// reused while they still match, so a settings change can never
+        /// play the wrong source or quality.
+        let quality: String
+        let thirdPartyQuality: ThirdPartyAudioQuality
+        let enabledSourceIDs: Set<AudioSourceID>
+        let allowsUnblock: Bool
+
+        func matchesCurrentSettings() -> Bool {
+            quality == SettingsManager.shared.audioQuality.rawValue
+                && thirdPartyQuality == SettingsManager.shared.thirdPartyQuality
+                && enabledSourceIDs == SettingsManager.shared.enabledAudioSourceIDs
+                && allowsUnblock == SettingsManager.shared.canResolveUnblockedTracks
+        }
+    }
+    private var warmedSource: WarmedSource?
+    private var warmUpTask: Task<Void, Never>?
+
     // MARK: - Offline playback (downloads)
 
     /// The song that could not play because it is not on this device.
@@ -724,6 +759,13 @@ final class PlayerService: ObservableObject {
         AudioSpectrum.shared.beginPreparing()
         resolveGeneration += 1
         let generation = resolveGeneration
+        // A warmed URL for another track is stale now; one for this track is
+        // exactly what resolveAndLoad is about to consume, so keep it.
+        if warmedSource?.trackID != track.id {
+            warmedSource = nil
+            warmUpTask?.cancel()
+            warmUpTask = nil
+        }
         if advancingAfterFailure {
             advancingAfterFailure = false
         } else {
@@ -796,6 +838,31 @@ final class PlayerService: ObservableObject {
             if cacheEnabled, await loadFallbackCache(for: track, generation: generation, allowsUnblock: allowsUnblock, resumeAt: resumeAt) { return }
             guard generation == resolveGeneration else { return }
             unavailableOffline(track, generation: generation)
+            return
+        }
+
+        // A warmed-up URL from the pre-skip preparation: skip the whole
+        // resolution chain (official API + script sources) and go straight
+        // to loading. The audio-cache checks above still win when the file
+        // is already on this device.
+        if let warmed = warmedSource, warmed.trackID == track.id, warmed.matchesCurrentSettings() {
+            warmedSource = nil
+            guard generation == resolveGeneration else { return }
+            servedQuality = warmed.servedQuality
+            if let unblockID = warmed.unblockSourceID, let displayName = warmed.unblockDisplayName {
+                currentUnblockSourceID = unblockID
+                unblockSource = displayName
+            }
+            if warmed.isTrial {
+                isTrial = true
+                ToastCenter.shared.show(String(localized: "VIP 歌曲，当前为试听片段"))
+            }
+            let loadResult = await loadResolvedURL(track, url: warmed.url, durationMS: warmed.durationMS, generation: generation, resumeAt: resumeAt)
+            if case .loaded = loadResult,
+               let displayName = warmed.unblockDisplayName,
+               SettingsManager.shared.thirdPartyVIPReminder {
+                ToastCenter.shared.show(String(localized: "已使用第三方音源：\(displayName)"))
+            }
             return
         }
 
@@ -901,6 +968,102 @@ final class PlayerService: ObservableObject {
             ToastCenter.shared.show(String(localized: "已使用第三方音源：\(unblocked.displayName)"))
         }
         return true
+    }
+
+    // MARK: - Next-track URL warm-up
+
+    /// Resolve the next track's playable URL as soon as the current track is
+    /// ready, so a manual skip starts from a known URL instead of paying the
+    /// official API + script-source round trips after the tap.
+    private func warmUpNextTrack() {
+        guard let next = nextCandidates().first?.track else { return }
+        warmUpTrack(next)
+    }
+
+    /// Start resolving `track`'s playable URL in the background (same chain
+    /// as playback: official API, then third-party script sources on
+    /// refusal/trial). Safe to call repeatedly: a warm-up for another track
+    /// is cancelled, and an already-warmed result for this track is kept.
+    /// The swipe gesture calls this the moment a drag passes the cut-over
+    /// threshold, so the target's URL is usually ready by release.
+    func warmUpTrack(_ track: Track) {
+        if let warmed = warmedSource, warmed.trackID == track.id, warmed.matchesCurrentSettings() { return }
+        warmUpTask?.cancel()
+        warmUpTask = Task { [weak self] in
+            guard let self else { return }
+            let warmed = await self.resolveWarmedSource(for: track)
+            guard !Task.isCancelled else { return }
+            // The track became current meanwhile: nothing left to warm.
+            guard self.currentTrack?.id != track.id else { return }
+            self.warmedSource = warmed
+        }
+    }
+
+    /// The resolution half of `resolveAndLoad`, without any playback side
+    /// effects: official API (preferred quality, then standard), third-party
+    /// script sources when it refuses or only offers a trial, and the trial
+    /// URL itself when nothing else answers. Pure except for reading
+    /// settings; never touches `attemptedUnblockSources`, which belongs to
+    /// the track actually playing.
+    private func resolveWarmedSource(for track: Track) async -> WarmedSource? {
+        let quality = SettingsManager.shared.audioQuality.rawValue
+        let allowsUnblock = SettingsManager.shared.canResolveUnblockedTracks
+        let fingerprint = (
+            quality: quality,
+            thirdPartyQuality: SettingsManager.shared.thirdPartyQuality,
+            enabledSourceIDs: SettingsManager.shared.enabledAudioSourceIDs,
+            allowsUnblock: allowsUnblock
+        )
+        var data: SongURLData?
+        do {
+            data = try await MusicAPI.songURL(ids: [track.id], level: quality).first
+            if data?.url == nil, quality != AudioQuality.standard.rawValue {
+                data = try await MusicAPI.songURL(ids: [track.id], level: AudioQuality.standard.rawValue).first
+            }
+        } catch {
+            return nil
+        }
+        guard !Task.isCancelled else { return nil }
+        var officialURL: URL?
+        var officialIsTrial = false
+        if let urlString = data?.url,
+           let url = URL(string: urlString.replacingOccurrences(of: "http://", with: "https://")) {
+            officialURL = url
+            officialIsTrial = data?.freeTrialInfo != nil
+        }
+        if let url = officialURL, !officialIsTrial {
+            return WarmedSource(trackID: track.id, url: url, isTrial: false, durationMS: data?.time,
+                                servedQuality: data?.level, unblockSourceID: nil, unblockDisplayName: nil,
+                                quality: fingerprint.quality, thirdPartyQuality: fingerprint.thirdPartyQuality,
+                                enabledSourceIDs: fingerprint.enabledSourceIDs, allowsUnblock: fingerprint.allowsUnblock)
+        }
+        if allowsUnblock {
+            // Fresh resolution for a different track: nothing is excluded.
+            // (`attemptedUnblockSources` belongs to the track actually
+            // playing; a source that failed for it may still work here.)
+            let resolution = await UnblockService.resolve(
+                track,
+                enabledSources: SettingsManager.shared.enabledAudioSourceIDs,
+                excluding: [],
+                customSources: CustomAudioSourceStore.shared.sources,
+                customQuality: SettingsManager.shared.thirdPartyQuality
+            )
+            guard !Task.isCancelled else { return nil }
+            if let unblocked = resolution.source {
+                return WarmedSource(trackID: track.id, url: unblocked.url, isTrial: false, durationMS: nil,
+                                    servedQuality: nil, unblockSourceID: unblocked.id, unblockDisplayName: unblocked.displayName,
+                                    quality: fingerprint.quality, thirdPartyQuality: fingerprint.thirdPartyQuality,
+                                    enabledSourceIDs: fingerprint.enabledSourceIDs, allowsUnblock: fingerprint.allowsUnblock)
+            }
+        }
+        // Nothing else answered: the official trial URL still plays a snippet.
+        if let url = officialURL {
+            return WarmedSource(trackID: track.id, url: url, isTrial: officialIsTrial, durationMS: data?.time,
+                                servedQuality: data?.level, unblockSourceID: nil, unblockDisplayName: nil,
+                                quality: fingerprint.quality, thirdPartyQuality: fingerprint.thirdPartyQuality,
+                                enabledSourceIDs: fingerprint.enabledSourceIDs, allowsUnblock: fingerprint.allowsUnblock)
+        }
+        return nil
     }
 
     private func handleUnplayable(_ track: Track) {
@@ -1156,6 +1319,10 @@ final class PlayerService: ObservableObject {
     private func itemBecameReady(generation: Int) {
         guard generation == resolveGeneration else { return }
         consecutiveFailures = 0
+        // The current track is playing: resolve the next track's URL now, so
+        // a manual skip starts from a known URL instead of paying the
+        // official API + script-source round trips after the tap.
+        warmUpNextTrack()
     }
 
     /// An upstream stream or a cached file failed. The song gets one reload,
