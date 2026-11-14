@@ -616,14 +616,16 @@ struct NowPlayingView: View {
                     #endif
                 } else {
                     #if os(iOS)
-                    IOSImmersiveLyricsColumn()
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(AppAnimation.standard) {
-                                showLyricsOnMobile = false
+                    NowPlayingLyricsPager(isShown: true, horizontalInset: 32) {
+                        IOSImmersiveLyricsColumn()
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(AppAnimation.standard) {
+                                    showLyricsOnMobile = false
+                                }
                             }
-                        }
-                        .transition(.opacity.combined(with: .scale(scale: 1.05)))
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 1.05)))
                     #else
                     lyricsColumn
                         .contentShape(Rectangle())
@@ -658,9 +660,17 @@ struct NowPlayingView: View {
         return VStack(spacing: 20) {
             Spacer().frame(height: 44)
             if showLyricsOnMobile {
+                #if os(iOS)
+                NowPlayingLyricsPager(isShown: true, horizontalInset: 16) {
+                    lyricsColumn
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.opacity)
+                #else
                 lyricsColumn
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.opacity)
+                #endif
             } else {
                 VStack(spacing: 20) {
                     Group {
@@ -724,7 +734,9 @@ struct NowPlayingView: View {
                     CompactQueueContent()
                         .transition(.opacity)
                 } else {
-                    IOSImmersiveLyricsColumn()
+                    NowPlayingLyricsPager(isShown: showLyricsOnMobile, horizontalInset: 32) {
+                        IOSImmersiveLyricsColumn()
+                    }
                         .opacity(showLyricsOnMobile ? 1 : 0)
                         .allowsHitTesting(showLyricsOnMobile)
                         .accessibilityHidden(!showLyricsOnMobile)
@@ -892,8 +904,10 @@ struct NowPlayingView: View {
                     .opacity(showLyricsOnMobile ? 0 : 1)
                     .allowsHitTesting(!showLyricsOnMobile)
 
-                IOSMinimalLyricsColumn {
-                    showLyricsOnMobile = false
+                NowPlayingLyricsPager(isShown: showLyricsOnMobile, horizontalInset: 32) {
+                    IOSMinimalLyricsColumn {
+                        showLyricsOnMobile = false
+                    }
                 }
                 .opacity(showLyricsOnMobile ? 1 : 0)
                 .allowsHitTesting(showLyricsOnMobile)
