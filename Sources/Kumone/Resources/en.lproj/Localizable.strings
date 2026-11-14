@@ -30,6 +30,7 @@
 "喜欢" = "Like";
 "取消喜欢" = "Unlike";
 "歌词" = "Lyrics";
+"评论" = "Comments";
 "播放队列" = "Queue";
 "检查更新…" = "Check for Updates…";
 "打开播放页" = "Open Now Playing";
@@ -286,6 +287,7 @@
 "已经是最后一首了" = "Already the last song";
 "已使用第三方音源：%@" = "Playing from third-party source: %@";
 "《%@》无法播放%@" = "“%@” can’t be played%@";
+"网易云未给出播放地址（%lld）" = "NetEase gave no playback URL (%lld)";
 "VIP 歌曲，当前为试听片段" = "VIP song — playing a trial clip";
 "酷我音乐" = "Kuwo Music";
 "酷狗音乐" = "Kugou Music";
@@ -678,6 +680,16 @@
 
 /* Song comments */
 "查看评论" = "View Comments";
+"分享评论" = "Share Comment";
+"复制评论" = "Copy Comment";
+"评论已复制" = "Comment copied";
+"分享" = "Share";
+"已保存" = "Saved";
+"拷贝图片" = "Copy Image";
+"已拷贝" = "Copied";
+"评论卡片：%@" = "Comment card: %@";
+"%@ 的评论" = "Comment on %@";
+"没有相册权限，请在系统设置中允许 Kumone 添加照片" = "Kumone can’t add photos. Allow it in Settings.";
 "热门评论" = "Top Comments";
 "最新评论" = "Latest Comments";
 "还没有评论" = "No comments yet";
