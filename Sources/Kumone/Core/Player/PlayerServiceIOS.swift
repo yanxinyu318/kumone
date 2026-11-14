@@ -230,6 +230,10 @@ final class PlayerService: ObservableObject {
         let thirdPartyQuality: ThirdPartyAudioQuality
         let enabledSourceIDs: Set<AudioSourceID>
         let allowsUnblock: Bool
+        /// When the URL was fetched. Script-source links can expire, so a
+        /// warmed entry older than ten minutes is never reused: it would
+        /// cost a failed load plus a retry instead of saving time.
+        let warmedAt: Date = Date()
 
         /// Main-actor: `SettingsManager`'s settings live on the main actor,
         /// and this struct (unlike the enclosing `@MainActor` class) does not
@@ -242,9 +246,28 @@ final class PlayerService: ObservableObject {
                 && enabledSourceIDs == SettingsManager.shared.enabledAudioSourceIDs
                 && allowsUnblock == SettingsManager.shared.canResolveUnblockedTracks
         }
+
+        /// Reusable only while the settings still match and the URL is
+        /// fresh (see `warmedAt`).
+        @MainActor
+        func isUsable() -> Bool {
+            matchesCurrentSettings() && Date().timeIntervalSince(warmedAt) < 600
+        }
     }
-    private var warmedSource: WarmedSource?
-    private var warmUpTask: Task<Void, Never>?
+    /// Warmed URLs, keyed by track id — a small window (next two tracks plus
+    /// the drag target), not a single slot. The old single slot was thrown
+    /// away on every skip (`startPlaying` discarded anything that wasn't the
+    /// track just started), so a fast double-swipe always landed on a cold
+    /// URL and paid the full resolution chain again. Entries are capped at
+    /// three and evicted oldest-first.
+    private var warmedSources: [Int: WarmedSource] = [:]
+    private var warmedOrder: [Int] = []
+    private static let maxWarmedTracks = 3
+    /// Tracks with a warm-up currently running, so the same track is never
+    /// warmed twice at once. Warm-ups are never cancelled for another
+    /// track's sake: one that finishes late is still useful if the user
+    /// swipes to that track next.
+    private var warmingIDs: Set<Int> = []
 
     // MARK: - Offline playback (downloads)
 
@@ -773,13 +796,11 @@ final class PlayerService: ObservableObject {
         AudioSpectrum.shared.beginPreparing()
         resolveGeneration += 1
         let generation = resolveGeneration
-        // A warmed URL for another track is stale now; one for this track is
-        // exactly what resolveAndLoad is about to consume, so keep it.
-        if warmedSource?.trackID != track.id {
-            warmedSource = nil
-            warmUpTask?.cancel()
-            warmUpTask = nil
-        }
+        // Warmed URLs for other tracks stay in the window: the entry for the
+        // track about to play is consumed by resolveAndLoad below, and the
+        // rest are exactly what a fast second swipe lands on. (The old code
+        // threw the whole slot away here, which is why a double-swipe never
+        // got a warm URL.)
         if advancingAfterFailure {
             advancingAfterFailure = false
         } else {
@@ -866,8 +887,9 @@ final class PlayerService: ObservableObject {
         // resolution chain (official API + script sources) and go straight
         // to loading. The audio-cache checks above still win when the file
         // is already on this device.
-        if let warmed = warmedSource, warmed.trackID == track.id, warmed.matchesCurrentSettings() {
-            warmedSource = nil
+        if let warmed = warmedSources[track.id], warmed.isUsable() {
+            warmedSources.removeValue(forKey: track.id)
+            warmedOrder.removeAll { $0 == track.id }
             guard generation == resolveGeneration else { return }
             servedQuality = warmed.servedQuality
             if let unblockID = warmed.unblockSourceID, let displayName = warmed.unblockDisplayName {
@@ -1005,27 +1027,47 @@ final class PlayerService: ObservableObject {
     /// Resolve the next track's playable URL as soon as the current track is
     /// ready, so a manual skip starts from a known URL instead of paying the
     /// official API + script-source round trips after the tap.
+    /// Warm the next two tracks, not just the immediate next: a fast
+    /// double-swipe lands on the second one, and warming it costs a few KB.
     private func warmUpNextTrack() {
-        guard let next = nextCandidates().first?.track else { return }
-        warmUpTrack(next)
+        for candidate in nextCandidates().prefix(2) {
+            warmUpTrack(candidate.track)
+        }
     }
 
     /// Start resolving `track`'s playable URL in the background (same chain
     /// as playback: official API, then third-party script sources on
-    /// refusal/trial). Safe to call repeatedly: a warm-up for another track
-    /// is cancelled, and an already-warmed result for this track is kept.
+    /// refusal/trial). Safe to call repeatedly: an already-warmed or
+    /// already-warming result for this track is kept, and a warm-up for one
+    /// track never cancels another's — a result that finishes late is still
+    /// useful if the user swipes to that track next.
     /// The swipe gesture calls this the moment a drag passes the cut-over
     /// threshold, so the target's URL is usually ready by release.
     func warmUpTrack(_ track: Track) {
-        if let warmed = warmedSource, warmed.trackID == track.id, warmed.matchesCurrentSettings() { return }
-        warmUpTask?.cancel()
-        warmUpTask = Task { [weak self] in
+        if let warmed = warmedSources[track.id], warmed.isUsable() { return }
+        guard !warmingIDs.contains(track.id) else { return }
+        warmingIDs.insert(track.id)
+        Task { [weak self] in
             guard let self else { return }
+            defer { self.warmingIDs.remove(track.id) }
             let warmed = await self.resolveWarmedSource(for: track)
-            guard !Task.isCancelled else { return }
-            // The track became current meanwhile: nothing left to warm.
+            // The track became current meanwhile: its own resolution already
+            // ran, nothing left to warm.
             guard self.currentTrack?.id != track.id else { return }
-            self.warmedSource = warmed
+            self.storeWarmed(warmed, for: track.id)
+        }
+    }
+
+    /// File a warmed URL in the window, evicting the oldest entry past the
+    /// cap. A nil result (nothing answered) stores nothing.
+    private func storeWarmed(_ warmed: WarmedSource?, for trackID: Int) {
+        guard let warmed else { return }
+        warmedSources[trackID] = warmed
+        warmedOrder.removeAll { $0 == trackID }
+        warmedOrder.append(trackID)
+        while warmedOrder.count > Self.maxWarmedTracks, let oldest = warmedOrder.first {
+            warmedOrder.removeFirst()
+            warmedSources.removeValue(forKey: oldest)
         }
     }
 
