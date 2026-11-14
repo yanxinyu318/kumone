@@ -26,6 +26,14 @@ struct NowPlayingView: View {
     /// Set once a drag passes the cut-over threshold and its target's URL
     /// has been warmed; reset on release so the next drag warms again.
     @State private var swipeWarmed = false
+    /// The offset a new drag starts from: a drag that begins mid-settle
+    /// (the spring from the previous swipe still running) anchors here, so
+    /// taking over never jumps the cover.
+    @State private var swipeDragBase: CGFloat = 0
+    /// Clears `swipeResetPending` once the settle spring has landed. Kept so
+    /// a new drag can cancel it and take over immediately instead of being
+    /// dropped. Never carries a track switch (see `coverSwipeGesture`).
+    @State private var swipeSettleTask: Task<Void, Never>?
     #endif
     @State private var activeIndex: Int?
     @State private var isUserScrolling = false
@@ -1112,9 +1120,12 @@ struct NowPlayingView: View {
         // 切歌后强制把轮播归位到中间页：跟住 currentTrack 变来归位，
         // 用 .none 明确取消动画，不管切歌从哪来（滑动、按钮、列表点歌、
         // 自动连播）都不会错位。拖动进行中不归位，免得自动连播打断正在拖的手。
+        // 刚松手那次切歌例外：落页弹簧正带着封面往中间走，这时归零会把弹簧
+        // 半路掐断、封面跳一下——那 0.45 秒里归位交给手势自己（见
+        // coverSwipeGesture 的 swipeResetPending）。
         .onChange(of: player.currentTrack?.id) { _ in
             guard !swipeIsDragging else { return }
-            swipeResetPending = false
+            guard !swipeResetPending else { return }
             withAnimation(.none) {
                 swipeDragOffset = 0
             }
@@ -1126,23 +1137,32 @@ struct NowPlayingView: View {
     private func coverSwipeGesture(pageWidth: CGFloat, hasPrev: Bool, hasNext: Bool) -> some Gesture {
         DragGesture(minimumDistance: 8)
             .onChanged { value in
-                guard !swipeResetPending else { return }
                 let translation = value.translation
                 guard abs(translation.width) > abs(translation.height) * 0.6 else { return }
-                swipeIsDragging = true
+                if !swipeIsDragging {
+                    // A new drag takes over, even mid-settle: cancel the
+                    // settle so the next swipe is never dropped, and anchor
+                    // to the offset the spring has reached so the cover
+                    // doesn't jump when this drag starts moving it.
+                    swipeSettleTask?.cancel()
+                    swipeSettleTask = nil
+                    swipeResetPending = false
+                    swipeDragBase = swipeDragOffset
+                    swipeIsDragging = true
+                }
                 var raw = translation.width
                 // 没歌的方向：阻尼回弹，拖不动。
                 if (raw < 0 && !hasNext) || (raw > 0 && !hasPrev) {
                     raw *= 0.3
                 }
-                swipeDragOffset = raw
-                // 拖过切歌阈值就先把目标那首的链接取好：松手落页的 0.35 秒里
+                swipeDragOffset = swipeDragBase + raw
+                // 拖过切歌阈值就先把目标那首的链接取好：松手落页的瞬间
                 // 链接大概率已经到了，切歌时直接播，不用再等现取。
-                if !swipeWarmed, abs(raw) > 60 {
-                    if raw < 0, hasNext, let next = trackAfterCurrent() {
+                if !swipeWarmed, abs(swipeDragOffset) > 60 {
+                    if swipeDragOffset < 0, hasNext, let next = trackAfterCurrent() {
                         player.warmUpTrack(next)
                         swipeWarmed = true
-                    } else if raw > 0, hasPrev, let prev = trackBeforeCurrent() {
+                    } else if swipeDragOffset > 0, hasPrev, let prev = trackBeforeCurrent() {
                         player.warmUpTrack(prev)
                         swipeWarmed = true
                     }
@@ -1154,28 +1174,35 @@ struct NowPlayingView: View {
                 let translation = value.translation.width
                 let velocity = value.predictedEndTranslation.width
                 let threshold: CGFloat = 60
-                if (translation < -threshold || velocity < -250) && hasNext {
-                    // 左滑 -> 下一首：先弹簧落页，再切歌归零。
+                if (translation < -threshold || velocity < -250 || swipeDragOffset < -threshold) && hasNext {
+                    // 左滑 -> 下一首：松手这一刻就切歌，歌名、进度、声音跟
+                    // 新歌一起变，不再等 350ms。封面不能跟着跳：三页轮播的
+                    // 页一变，同一张封面在 HStack 里的位置挪了一整页，所以
+                    // 先把偏移量反向补一页（无动画、同一帧内完成，画面不动），
+                    // 再弹簧滑回中间。旧版是先弹簧、睡 350ms 再切歌，封面比
+                    // 歌名先到、歌比封面晚到，快滑时还会排起队多跳好几首。
                     swipeResetPending = true
-                    withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
-                        swipeDragOffset = -pageWidth
-                    }
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 350_000_000)
-                        player.next()
+                    swipeDragOffset += pageWidth
+                    player.next()
+                    swipeSettleTask?.cancel()
+                    swipeSettleTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 450_000_000)
                         swipeResetPending = false
+                    }
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
                         swipeDragOffset = 0
                     }
-                } else if (translation > threshold || velocity > 250) && hasPrev {
+                } else if (translation > threshold || velocity > 250 || swipeDragOffset > threshold) && hasPrev {
                     // 右滑 -> 上一首：直接切到上一首（不走“进度 > 4 秒先回到开头”那套）。
                     swipeResetPending = true
-                    withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
-                        swipeDragOffset = pageWidth
-                    }
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 350_000_000)
-                        if let prev = trackBeforeCurrent() { player.playTrack(prev) }
+                    swipeDragOffset -= pageWidth
+                    if let prev = trackBeforeCurrent() { player.playTrack(prev) }
+                    swipeSettleTask?.cancel()
+                    swipeSettleTask = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 450_000_000)
                         swipeResetPending = false
+                    }
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
                         swipeDragOffset = 0
                     }
                 } else {
