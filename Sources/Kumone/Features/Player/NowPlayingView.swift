@@ -684,7 +684,10 @@ struct NowPlayingView: View {
     }
 
     private func classicCompactLayout(size: CGSize) -> some View {
-        let artworkDim = min(size.width - 64, size.height * 0.38, 300)
+        // 封面边长取整到整点：size.height * 0.38 这种算出来常带小数，
+        // 三页横排时页与页的边界就落在亚像素上，光栅化会在缝隙处
+        // 漏出 1px 背景、滑过去看着像闪。取整后边界对齐整像素，缝隙消失。
+        let artworkDim = min(size.width - 64, size.height * 0.38, 300).rounded()
         return VStack(spacing: 20) {
             Spacer().frame(height: 44)
             if showLyricsOnMobile {
@@ -933,7 +936,8 @@ struct NowPlayingView: View {
 
     private func minimalCompactLayout(size: CGSize) -> some View {
         let contentWidth = max(size.width - 64, 0)
-        let artworkDimension = min(contentWidth, size.height * 0.52, 378)
+        // 同 classicCompactLayout：边长取整到整点，免得三页边界落亚像素、缝隙漏背景。
+        let artworkDimension = min(contentWidth, size.height * 0.52, 378).rounded()
 
         return VStack(spacing: 0) {
             ZStack(alignment: .top) {
@@ -1087,6 +1091,11 @@ struct NowPlayingView: View {
     }
 
     private func carouselPage(url: URL?, size: CGFloat) -> some View {
+        // 注意：这里不要再加圆角裁剪和阴影。之前每页单独裁圆角，
+        // 两页相邻时缝隙处两个圆角对着圆角、上下各留一个小缺口，
+        // 背景从缺口透出来，滑到下一首时缝隙正好走到封面右边角，
+        // 看着就是右边角闪几下。圆角和阴影统一做到整个轮播外层（见
+        // coverSwipeCarousel 末尾），缝隙处就是直边、不会再透背景。
         CachedAsyncImage(url: url) {
             Rectangle()
                 .fill(.white.opacity(0.06))
@@ -1097,8 +1106,6 @@ struct NowPlayingView: View {
                 )
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .shadow(color: .black.opacity(0.45), radius: 36, y: 18)
     }
 
     /// 左右滑动切歌：上一首 / 当前 / 下一首三页横排，手指拖多远下一页跟进来多远，
@@ -1129,6 +1136,12 @@ struct NowPlayingView: View {
         .offset(x: -size + swipeDragOffset)
         .frame(width: size, height: size, alignment: .leading)
         .clipped()
+        // 圆角和阴影只做在整个轮播外层：可见封面的四个外角照样是圆角、
+        // 也照样有阴影，但三页之间的缝隙是直边，不会再有圆角对圆角
+        // 的缺口透背景（右边角闪就是这个缺口）。阴影也不再跟每页走，
+        // 不会因为页与页的阴影叠加在缝隙处闪。
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: .black.opacity(0.45), radius: 36, y: 18)
         .contentShape(Rectangle())
         .gesture(coverSwipeGesture(pageWidth: size, hasPrev: hasPrev, hasNext: hasNext))
         // 切歌后强制把轮播归位到中间页：跟住 currentTrack 变来归位，
