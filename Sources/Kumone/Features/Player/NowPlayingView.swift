@@ -38,6 +38,9 @@ struct NowPlayingView: View {
     /// a new drag can cancel it and take over immediately instead of being
     /// dropped. Never carries a track switch (see `coverSwipeGesture`).
     @State private var swipeSettleTask: Task<Void, Never>?
+    /// 封面淡入透明度：非滑动切歌（按钮/列表/自动连播）时 0.15 秒淡入，
+    /// 比原版 0.3 秒淡入更快、比硬切更顺滑；滑动切歌走拖动跟手+弹簧，不用它。
+    @State private var coverFadeOpacity: Double = 1.0
     #endif
     @State private var activeIndex: Int?
     @State private var isUserScrolling = false
@@ -1107,6 +1110,7 @@ struct NowPlayingView: View {
                 .frame(width: size)
             carouselPage(url: currentArtworkURL, size: size)
                 .frame(width: size)
+            .opacity(coverFadeOpacity)
             carouselPage(url: artworkURL(for: trackAfterCurrent()), size: size)
                 .frame(width: size)
         }
@@ -1143,6 +1147,15 @@ struct NowPlayingView: View {
             }
             withAnimation(.none) {
                 swipeDragOffset = 0
+            }
+            // 非滑动切歌（按钮/列表/自动连播）才淡入：封面 0.15 秒淡入，
+            // 比原版 0.3 秒淡入更快、比硬切更顺滑。滑动自己的切歌在上面
+            // 已 return，不走这里（拖动跟手+弹簧本身就是顺滑的）。
+            coverFadeOpacity = 0
+            DispatchQueue.main.async {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    coverFadeOpacity = 1
+                }
             }
         }
         .scaleEffect(player.isPlaying ? 1 : 0.95)
