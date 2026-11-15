@@ -41,6 +41,9 @@ struct NowPlayingView: View {
     /// 封面淡入透明度：非滑动切歌（按钮/列表/自动连播）时 0.15 秒淡入，
     /// 比原版 0.3 秒淡入更快、比硬切更顺滑；滑动切歌走拖动跟手+弹簧，不用它。
     @State private var coverFadeOpacity: Double = 1.0
+    /// 淡入代次：连点下一首时，旧的淡入 async 块跑到时若已有更新的淡入
+    /// 开始了就直接丢弃，免得封面淡进去又被拉回透明再淡一次、闪一下。
+    @State private var coverFadeGeneration = 0
     #endif
     @State private var activeIndex: Int?
     @State private var isUserScrolling = false
@@ -1108,11 +1111,14 @@ struct NowPlayingView: View {
         return HStack(spacing: 0) {
             carouselPage(url: artworkURL(for: trackBeforeCurrent()), size: size)
                 .frame(width: size)
+            .id(trackBeforeCurrent()?.id)
             carouselPage(url: currentArtworkURL, size: size)
                 .frame(width: size)
+            .id(player.currentTrack?.id)
             .opacity(coverFadeOpacity)
             carouselPage(url: artworkURL(for: trackAfterCurrent()), size: size)
                 .frame(width: size)
+            .id(trackAfterCurrent()?.id)
         }
         // 三页横排的 HStack 宽 3*size。注意：.frame 默认把超宽的子视图居中，
         // 不加 alignment 的话 offset -size 会停在右页（下一首的封面）上，
@@ -1151,8 +1157,11 @@ struct NowPlayingView: View {
             // 非滑动切歌（按钮/列表/自动连播）才淡入：封面 0.15 秒淡入，
             // 比原版 0.3 秒淡入更快、比硬切更顺滑。滑动自己的切歌在上面
             // 已 return，不走这里（拖动跟手+弹簧本身就是顺滑的）。
+                                                coverFadeGeneration += 1
+                                                let fadeGeneration = coverFadeGeneration
             coverFadeOpacity = 0
             DispatchQueue.main.async {
+                guard fadeGeneration == coverFadeGeneration else { return }
                 withAnimation(.easeOut(duration: 0.15)) {
                     coverFadeOpacity = 1
                 }
@@ -1160,6 +1169,18 @@ struct NowPlayingView: View {
         }
         .scaleEffect(player.isPlaying ? 1 : 0.95)
         .animation(AppAnimation.bouncy, value: player.isPlaying)
+        // 切歌时把相邻两首的封面预取进内存缓存：轮播换页那一刻，左右页
+        // 的图已经在缓存里，不会先闪一下深色占位符、再出图（右边亮、
+        // 左边暗的“闪”就是占位符和亮封面同时出现造成的）。ImageCache
+        // 会合并同地址的在途请求，和侧页自己的加载不重复发网。
+        .task(id: player.currentTrack?.id) {
+            if let prev = trackBeforeCurrent(), let url = artworkURL(for: prev) {
+                _ = await ImageCache.shared.image(for: url)
+            }
+            if let next = trackAfterCurrent(), let url = artworkURL(for: next) {
+                _ = await ImageCache.shared.image(for: url)
+            }
+        }
     }
 
     private func coverSwipeGesture(pageWidth: CGFloat, hasPrev: Bool, hasNext: Bool) -> some Gesture {
