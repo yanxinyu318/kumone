@@ -1376,11 +1376,14 @@ final class PlayerService: ObservableObject {
             return
         }
 
+        // 第三方源之间切换也要断点续播，不能从头再放。
+        let resumeAt = progress > 1 ? progress : 0
         Task {
             let loaded = await resolveAndLoadUnblocked(
                 track,
                 generation: generation,
-                requiresActivePlayback: true
+                requiresActivePlayback: true,
+                resumeAt: resumeAt
             )
             guard isPlaying else { return }
             guard loaded else {
@@ -1426,7 +1429,10 @@ final class PlayerService: ObservableObject {
         engine.replaceCurrentItem(with: nil)
         releaseCurrentPlaybackResources()
         let connectivity = error.map(ConnectivityFailure.matches) ?? false
-
+        // 断点续播：progress 仍保留最后播放位置（替换播放项不重置它），
+        // 第二次失败转第三方时也要从这里继续，不能从头再放。
+        let resumeAt = progress > 1 ? progress : 0
+        
         guard itemRetryGeneration != generation else {
             if connectivity {
                 handleConnectivityItemFailure(track: track, generation: generation)
@@ -1434,7 +1440,7 @@ final class PlayerService: ObservableObject {
             }
             Task {
                 guard SettingsManager.shared.canResolveUnblockedTracks,
-                      await resolveAndLoadUnblocked(track, generation: generation) else {
+                      await resolveAndLoadUnblocked(track, generation: generation, resumeAt: resumeAt) else {
                     guard generation == resolveGeneration else { return }
                     handleUnplayable(track)
                     return
@@ -1452,7 +1458,6 @@ final class PlayerService: ObservableObject {
             return
         }
         AudioSpectrum.shared.beginPreparing()
-        let resumeAt = progress > 1 ? progress : 0
         Task {
             if let twin {
                 _ = await loadResolvedURL(track, url: twin, durationMS: durationMS, generation: generation, resumeAt: resumeAt)
