@@ -360,12 +360,64 @@ final class KumoneLXScriptBridge: NSObject, KumoneLXScriptBridgeExports {
     }
 }
 
+/// 诊断用：最近一次自定义音源解析失败的原因。解析失败在代码里都长一个样
+/// （直接返回 nil），没有这个就分不清超时 / 无结果 / 脚本错。
+/// 只有失败类别，不含源地址、脚本内容、卡密、Cookie 等任何私密信息。
+enum CustomSourceFailureReason {
+    case sourceDisabled
+    case noRuntime
+    case noEntryPoint
+    case scriptError
+    case timeout
+    case noURL
+
+    var toastText: String {
+        switch self {
+        case .sourceDisabled:
+            return "自定义音源未开启：去设置 → 第三方音源，点进你的源，把里面的开关打开"
+        case .noRuntime:
+            return "自定义音源：脚本运行环境建立失败"
+        case .noEntryPoint:
+            return "自定义音源：脚本没有音乐地址解析入口"
+        case .scriptError:
+            return "自定义音源：脚本执行出错"
+        case .timeout:
+            return "自定义音源：脚本 12 秒无返回（超时）"
+        case .noURL:
+            return "自定义音源：脚本返回了内容，但里面没有可用的播放地址"
+        }
+    }
+}
+
+/// 诊断用：最近一次自定义音源解析失败的原因（线程安全，取完即清）。
+final class CustomSourceLastFailure: @unchecked Sendable {
+    static let shared = CustomSourceLastFailure()
+    private let lock = NSLock()
+    private var reason: CustomSourceFailureReason?
+
+    func record(_ reason: CustomSourceFailureReason?) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.reason = reason
+    }
+
+    /// 取出并清空，避免把上一首歌的原因贴到下一首上。
+    func take() -> CustomSourceFailureReason? {
+        lock.lock()
+        defer { lock.unlock() }
+        let taken = reason
+        reason = nil
+        return taken
+    }
+}
 final class KumoneLXScriptRuntime {
     private let sourceID: String
     private let queue = DispatchQueue(label: "Kumone.LXScriptRuntime")
     private let context: JSContext
     private let bridge: KumoneLXScriptBridge
     private var handlers: [String: JSValue] = [:]
+    /// 诊断用：最近一次 invokeRequest 失败的原因（nil 表示成功或尚未调用）。
+    private(set) var lastFailureReason: CustomSourceFailureReason?
 
     init?(source: CustomAudioSource, script: String) {
         sourceID = source.id
@@ -544,8 +596,10 @@ final class KumoneLXScriptRuntime {
     }
 
     func invokeRequest(payload: [String: Any], timeout: TimeInterval = 12) -> Any? {
+        lastFailureReason = nil
         let semaphore = DispatchSemaphore(value: 0)
         var result: Any?
+        var failure: CustomSourceFailureReason?
         let resultLock = NSLock()
         let done = KumoneLXScriptDoneBridge()
         done.onResolve = { value in
@@ -555,6 +609,9 @@ final class KumoneLXScriptRuntime {
             semaphore.signal()
         }
         done.onReject = { _ in
+            resultLock.lock()
+            failure = .scriptError
+            resultLock.unlock()
             semaphore.signal()
         }
 
@@ -576,6 +633,9 @@ final class KumoneLXScriptRuntime {
             """)?.toString() ?? ""
             guard handler != nil || !resolverKind.isEmpty else {
                 lxScriptLog.debug("第三方脚本没有可用的音乐地址解析入口：\(self.sourceID)")
+                resultLock.lock()
+                failure = .noEntryPoint
+                resultLock.unlock()
                 semaphore.signal()
                 return
             }
@@ -613,17 +673,24 @@ final class KumoneLXScriptRuntime {
             """)
             if self.context.exception != nil {
                 lxScriptLog.debug("第三方脚本调用异常：\(self.sourceID)")
+                resultLock.lock()
+                failure = .scriptError
+                resultLock.unlock()
                 semaphore.signal()
             }
         }
 
         let deadline = DispatchTime.now() + timeout
-        if semaphore.wait(timeout: deadline) == .timedOut {
+        let timedOut = semaphore.wait(timeout: deadline) == .timedOut
+        if timedOut {
             lxScriptLog.debug("第三方脚本调用超时：\(self.sourceID) \(Int(timeout))s")
         }
         resultLock.lock()
         let finalResult = result
+        if timedOut, finalResult == nil { failure = .timeout }
+        let finalFailure = failure
         resultLock.unlock()
+        lastFailureReason = finalFailure
         return finalResult
     }
 }
@@ -668,10 +735,18 @@ final class LXScriptSourceRunner {
                 "musicInfo": musicInfoPayload(track: track)
             ]
         ]
-        guard let raw = runtime?.invokeRequest(payload: payload) else { return nil }
+        guard let runtime else {
+            CustomSourceLastFailure.shared.record(.noRuntime)
+            return nil
+        }
+        guard let raw = runtime.invokeRequest(payload: payload) else {
+            CustomSourceLastFailure.shared.record(runtime.lastFailureReason ?? .noURL)
+            return nil
+        }
         guard let urlString = extractURLString(from: raw),
               let url = playableURL(urlString)
         else {
+            CustomSourceLastFailure.shared.record(.noURL)
             return nil
         }
         return ResolvedAudioSource(id: .custom, displayName: source.name, url: url)
