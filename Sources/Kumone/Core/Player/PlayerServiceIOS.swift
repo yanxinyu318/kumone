@@ -818,6 +818,19 @@ final class PlayerService: ObservableObject {
         }
     }
 
+    /// VIP-only for this account (no NetEase membership): the official API
+    /// only ever offers a 30s trial for these tracks, so they go to the
+    /// user's own custom source first instead of paying for the trial.
+    private func isVIPOnly(_ track: Track) -> Bool {
+        track.playability(privilege: nil,
+                          isLoggedIn: AccountStore.shared.isLoggedIn,
+                          vipType: AccountStore.shared.vipType) == .vipOnly
+    }
+
+    private var customSourcesEnabled: Bool {
+        SettingsManager.shared.enabledAudioSourceIDs.contains(.custom)
+    }
+
     /// - Parameter skipsLocalCopies: set when the downloaded or cached copy
     ///   just failed to play, so the reload fetches the song again instead
     ///   of the same file.
@@ -883,11 +896,26 @@ final class PlayerService: ObservableObject {
             return
         }
 
+        // VIP-only tracks: the user's own custom source first. The official
+        // API only offers a 30s trial for these, so asking it first just
+        // burns a round trip — and a warmed trial below would then play
+        // without the custom source ever being retried. If the custom
+        // source cannot serve it, fall through to the normal chain.
+        if isVIPOnly(track), customSourcesEnabled,
+           await resolveAndLoadUnblocked(track, generation: generation, resumeAt: resumeAt,
+                                         onlyCustomSources: true) { return }
+        guard generation == resolveGeneration else { return }
+
         // A warmed-up URL from the pre-skip preparation: skip the whole
         // resolution chain (official API + script sources) and go straight
         // to loading. The audio-cache checks above still win when the file
         // is already on this device.
-        if let warmed = warmedSources[track.id], warmed.isUsable() {
+        // A warmed trial is never played straight away while the user's own
+        // source is enabled: the warm-up may have stored it when the script
+        // source was briefly unreachable, and playing it would skip the
+        // retry the full chain below performs.
+        if let warmed = warmedSources[track.id], warmed.isUsable(),
+           !(warmed.isTrial && customSourcesEnabled) {
             warmedSources.removeValue(forKey: track.id)
             warmedOrder.removeAll { $0 == track.id }
             guard generation == resolveGeneration else { return }
@@ -980,9 +1008,12 @@ final class PlayerService: ObservableObject {
         _ track: Track,
         generation: Int,
         requiresActivePlayback: Bool = false,
-        resumeAt: TimeInterval = 0
+        resumeAt: TimeInterval = 0,
+        onlyCustomSources: Bool = false
     ) async -> Bool {
-        let enabledSources = SettingsManager.shared.enabledAudioSourceIDs
+        let enabledSources: Set<AudioSourceID> = onlyCustomSources
+            ? [.custom]
+            : SettingsManager.shared.enabledAudioSourceIDs
         guard !enabledSources.isEmpty else { return false }
 
         guard generation == resolveGeneration,
@@ -1086,6 +1117,26 @@ final class PlayerService: ObservableObject {
             enabledSourceIDs: SettingsManager.shared.enabledAudioSourceIDs,
             allowsUnblock: allowsUnblock
         )
+        // VIP-only tracks: warm from the user's own custom source first, so
+        // the window never stores a 30s trial for a track the custom source
+        // could have served in full.
+        if isVIPOnly(track), customSourcesEnabled {
+            let resolution = await UnblockService.resolve(
+                track,
+                enabledSources: [.custom],
+                excluding: [],
+                customSources: CustomAudioSourceStore.shared.sources,
+                customQuality: SettingsManager.shared.thirdPartyQuality
+            )
+            guard !Task.isCancelled else { return nil }
+            if let unblocked = resolution.source {
+                return WarmedSource(trackID: track.id, url: unblocked.url, isTrial: false, durationMS: nil,
+                                    servedQuality: nil, unblockSourceID: unblocked.id, unblockDisplayName: unblocked.displayName,
+                                    quality: fingerprint.quality, thirdPartyQuality: fingerprint.thirdPartyQuality,
+                                    enabledSourceIDs: fingerprint.enabledSourceIDs, allowsUnblock: fingerprint.allowsUnblock)
+            }
+        }
+
         var data: SongURLData?
         do {
             // Same retrying call playback uses (#210): a dropped or timed-out
