@@ -835,8 +835,12 @@ final class PlayerService: ObservableObject {
     private func showTrialToast() {
         let base = String(localized: "VIP 歌曲，当前为试听片段")
         if customSourcesEnabled,
-           let reason = CustomSourceLastFailure.shared.take() {
-            ToastCenter.shared.show(base + "\n" + reason.toastText)
+           let failure = CustomSourceLastFailure.shared.take() {
+            var text = base + "\n" + failure.reason.toastText
+            if let detail = failure.detail, !detail.isEmpty {
+                text += "\n" + detail
+            }
+            ToastCenter.shared.show(text)
         } else {
             ToastCenter.shared.show(base)
         }
@@ -998,6 +1002,11 @@ final class PlayerService: ObservableObject {
         // The service refused — try third-party sources (unblock-style).
         if resolvedURL == nil || data?.freeTrialInfo != nil, allowsUnblock {
             if await resolveAndLoadUnblocked(track, generation: generation, resumeAt: resumeAt) { return }
+            // VIP 兜底：自定义源已失败、自带源又被关掉时，最后再试一次全部
+            // 第三方源。宁可走酷我/酷狗整首播，也别只给 30 秒试听；用的
+            // 哪个源会弹提示，自定义源每次都优先试，好了会自动接管。
+            if isVIPOnly(track),
+               await resolveAndLoadUnblocked(track, generation: generation, resumeAt: resumeAt, forceAllSources: true) { return }
         }
         guard generation == resolveGeneration else { return }
 
@@ -1020,11 +1029,14 @@ final class PlayerService: ObservableObject {
         generation: Int,
         requiresActivePlayback: Bool = false,
         resumeAt: TimeInterval = 0,
-        onlyCustomSources: Bool = false
+        onlyCustomSources: Bool = false,
+        forceAllSources: Bool = false
     ) async -> Bool {
         let enabledSources: Set<AudioSourceID> = onlyCustomSources
             ? [.custom]
-            : SettingsManager.shared.enabledAudioSourceIDs
+            : forceAllSources
+                ? [.custom, .pyncmd, .kugou, .kuwo]
+                : SettingsManager.shared.enabledAudioSourceIDs
         guard !enabledSources.isEmpty else { return false }
 
         guard generation == resolveGeneration,
