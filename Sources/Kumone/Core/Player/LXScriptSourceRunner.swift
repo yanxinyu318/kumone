@@ -394,20 +394,36 @@ final class CustomSourceLastFailure: @unchecked Sendable {
     static let shared = CustomSourceLastFailure()
     private let lock = NSLock()
     private var reason: CustomSourceFailureReason?
+    private var detail: String?
 
-    func record(_ reason: CustomSourceFailureReason?) {
+    func record(_ reason: CustomSourceFailureReason?, detail: String? = nil) {
         lock.lock()
         defer { lock.unlock() }
         self.reason = reason
+        self.detail = detail.map(Self.sanitizedDetail)
     }
 
     /// 取出并清空，避免把上一首歌的原因贴到下一首上。
-    func take() -> CustomSourceFailureReason? {
+    func take() -> (reason: CustomSourceFailureReason, detail: String?)? {
         lock.lock()
         defer { lock.unlock() }
-        let taken = reason
-        reason = nil
-        return taken
+        guard let reason else { return nil }
+        defer { self.reason = nil; self.detail = nil }
+        return (reason, detail)
+    }
+
+    /// 脱敏：去掉网址和过长的疑似密钥，只留一句能看懂的报错。
+    private static func sanitizedDetail(_ text: String) -> String {
+        var out = text
+        if let regex = try? NSRegularExpression(pattern: "https?://\\S+|www\\.\\S+", options: []) {
+            out = regex.stringByReplacingMatches(in: out, options: [], range: NSRange(out.startIndex..., in: out), withTemplate: "[链接已隐藏]")
+        }
+        if let regex = try? NSRegularExpression(pattern: "[A-Za-z0-9_\\-+/=]{24,}", options: []) {
+            out = regex.stringByReplacingMatches(in: out, options: [], range: NSRange(out.startIndex..., in: out), withTemplate: "[已隐藏]")
+        }
+        let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count > 100 { return String(trimmed.prefix(100)) + "…" }
+        return trimmed
     }
 }
 final class KumoneLXScriptRuntime {
@@ -418,6 +434,8 @@ final class KumoneLXScriptRuntime {
     private var handlers: [String: JSValue] = [:]
     /// 诊断用：最近一次 invokeRequest 失败的原因（nil 表示成功或尚未调用）。
     private(set) var lastFailureReason: CustomSourceFailureReason?
+    /// 诊断用：最近一次 invokeRequest 的脚本报错原文（已脱敏，见 holder）。
+    private(set) var lastFailureDetail: String?
 
     init?(source: CustomAudioSource, script: String) {
         sourceID = source.id
@@ -597,9 +615,11 @@ final class KumoneLXScriptRuntime {
 
     func invokeRequest(payload: [String: Any], timeout: TimeInterval = 12) -> Any? {
         lastFailureReason = nil
+        lastFailureDetail = nil
         let semaphore = DispatchSemaphore(value: 0)
         var result: Any?
         var failure: CustomSourceFailureReason?
+        var failureDetail: String?
         let resultLock = NSLock()
         let done = KumoneLXScriptDoneBridge()
         done.onResolve = { value in
@@ -608,9 +628,10 @@ final class KumoneLXScriptRuntime {
             resultLock.unlock()
             semaphore.signal()
         }
-        done.onReject = { _ in
+        done.onReject = { message in
             resultLock.lock()
             failure = .scriptError
+            failureDetail = message
             resultLock.unlock()
             semaphore.signal()
         }
@@ -689,8 +710,10 @@ final class KumoneLXScriptRuntime {
         let finalResult = result
         if timedOut, finalResult == nil { failure = .timeout }
         let finalFailure = failure
+        let finalDetail = failureDetail
         resultLock.unlock()
         lastFailureReason = finalFailure
+        lastFailureDetail = finalDetail
         return finalResult
     }
 }
@@ -740,7 +763,7 @@ final class LXScriptSourceRunner {
             return nil
         }
         guard let raw = runtime.invokeRequest(payload: payload) else {
-            CustomSourceLastFailure.shared.record(runtime.lastFailureReason ?? .noURL)
+            CustomSourceLastFailure.shared.record(runtime.lastFailureReason ?? .noURL, detail: runtime.lastFailureDetail)
             return nil
         }
         guard let urlString = extractURLString(from: raw),
