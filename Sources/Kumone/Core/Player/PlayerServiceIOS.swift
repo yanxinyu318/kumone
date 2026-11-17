@@ -830,6 +830,17 @@ final class PlayerService: ObservableObject {
     private var customSourcesEnabled: Bool {
         SettingsManager.shared.enabledAudioSourceIDs.contains(.custom)
     }
+    /// 诊断版：播 30 秒试听时，把自定义音源上一次失败的原因一起弹出来。
+    /// 超时 / 无结果 / 脚本错在代码里都长一个样（直接返回空），没有这句就分不清。
+    private func showTrialToast() {
+        let base = String(localized: "VIP 歌曲，当前为试听片段")
+        if customSourcesEnabled,
+           let reason = CustomSourceLastFailure.shared.take() {
+            ToastCenter.shared.show(base + "\n" + reason.toastText)
+        } else {
+            ToastCenter.shared.show(base)
+        }
+    }
 
     /// - Parameter skipsLocalCopies: set when the downloaded or cached copy
     ///   just failed to play, so the reload fetches the song again instead
@@ -926,7 +937,7 @@ final class PlayerService: ObservableObject {
             }
             if warmed.isTrial {
                 isTrial = true
-                ToastCenter.shared.show(String(localized: "VIP 歌曲，当前为试听片段"))
+                showTrialToast()
             }
             let loadResult = await loadResolvedURL(track, url: warmed.url, durationMS: warmed.durationMS, generation: generation, resumeAt: resumeAt)
             if case .loaded = loadResult,
@@ -999,7 +1010,7 @@ final class PlayerService: ObservableObject {
         servedQuality = data?.level
         if data?.freeTrialInfo != nil {
             isTrial = true
-            ToastCenter.shared.show(String(localized: "VIP 歌曲，当前为试听片段"))
+            showTrialToast()
         }
         _ = await loadResolvedURL(track, url: url, durationMS: data?.time, generation: generation, resumeAt: resumeAt)
     }
