@@ -19,8 +19,13 @@ enum CustomAudioSourceResolver {
         sources: [CustomAudioSource],
         quality: ThirdPartyAudioQuality
     ) async -> ResolvedAudioSource? {
+        // 诊断版：每次解析都先清空上一次的原因，免得把上一首的贴到这一首上。
+        CustomSourceLastFailure.shared.record(nil)
         let enabled = sources.filter(\.enabled)
-        guard !enabled.isEmpty else { return nil }
+        guard !enabled.isEmpty else {
+            CustomSourceLastFailure.shared.record(.sourceDisabled)
+            return nil
+        }
         return await withTaskGroup(of: ResolvedAudioSource?.self) { group in
             for source in enabled {
                 group.addTask {
