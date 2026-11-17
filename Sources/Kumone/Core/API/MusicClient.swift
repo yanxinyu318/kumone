@@ -39,8 +39,12 @@ final class MusicClient: @unchecked Sendable {
     private static let webUserAgent =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 
-    // The desktop client the eapi requests speak as.
-    private static let eapiUserAgent = "\(Upstream.clientName) 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)"
+    // The desktop client the eapi requests speak as. This must stay a
+        // Windows desktop UA: the eapi header and cookie already claim
+        // os=pc / appver 3.1.17.204416 / Windows 10, and an iPhone UA here
+        // is the exact split that trips the -460 risk control.
+        private static let eapiUserAgent =
+            "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.164 Safari/537.36"
     private static let eapiAppVersion = "3.1.17.204416"
     private static let eapiOSVersion = "Microsoft-Windows-10-Professional-build-19045-64bit"
     private static let eapiChannel = Upstream.tag
