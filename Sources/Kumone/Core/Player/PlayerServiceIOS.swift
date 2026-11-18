@@ -198,7 +198,7 @@ final class PlayerService: ObservableObject {
     private var attemptedUnblockSources: Set<AudioSourceID> = []
     /// 预热时已失败的音源（按歌记，带时间）：点歌后 60 秒内不再为同一首歌
     /// 重跑刚失败过的源——脚本服务端拒接时，每次点歌都白等一次。
-    private var warmupFailedSources: [Int: (sources: Set<AudioSourceID>, at: Date)] = []
+    private var warmupFailedSources: [Int: (sources: Set<AudioSourceID>, at: Date)] = [:]
     private var currentUnblockSourceID: AudioSourceID?
     /// The resolve generation that already spent its one reload after a
     /// failed item, so a reload that fails too gives up instead of looping.
