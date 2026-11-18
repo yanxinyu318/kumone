@@ -196,6 +196,9 @@ final class PlayerService: ObservableObject {
     private var lastRefusalCode: Int?
     private static let resolveLog = Logger(subsystem: "sb.moe.kumone", category: "playback")
     private var attemptedUnblockSources: Set<AudioSourceID> = []
+    /// 预热时已失败的音源（按歌记，带时间）：点歌后 60 秒内不再为同一首歌
+    /// 重跑刚失败过的源——脚本服务端拒接时，每次点歌都白等一次。
+    private var warmupFailedSources: [Int: (sources: Set<AudioSourceID>, at: Date)] = []
     private var currentUnblockSourceID: AudioSourceID?
     /// The resolve generation that already spent its one reload after a
     /// failed item, so a reload that fails too gives up instead of looping.
@@ -782,6 +785,12 @@ final class PlayerService: ObservableObject {
         unblockSource = nil
         currentUnblockSourceID = nil
         attemptedUnblockSources.removeAll()
+        // 预热刚为这首歌试过且失败的源，60 秒内不再重跑：点歌直接走
+        // 已预热的地址或试听，不用再等一次注定失败的脚本请求。
+        if let memo = warmupFailedSources.removeValue(forKey: track.id),
+           Date().timeIntervalSince(memo.at) < 60 {
+            attemptedUnblockSources = memo.sources
+        }
         itemStatusObservation?.invalidate()
         itemStatusObservation = nil
         isTrial = false
@@ -842,6 +851,12 @@ final class PlayerService: ObservableObject {
         }
         if let builtinSummary = BuiltinSourceLastFailure.shared.takeSummary() {
             lines.append(builtinSummary)
+        }
+        // 自带源全关时只剩自定义源：让用户一眼看清试听不是没歌，而是源挂了且没有兜底。
+        let builtinEnabled = SettingsManager.shared.enabledAudioSourceIDs
+            .intersection([.pyncmd, .kugou, .kuwo])
+        if builtinEnabled.isEmpty {
+            lines.append(String(localized: "自带音源已关闭"))
         }
         ToastCenter.shared.show(lines.joined(separator: "\n"))
     }
@@ -953,15 +968,13 @@ final class PlayerService: ObservableObject {
         }
 
         // VIP-only tracks: the official API only offers a 30s trial for
-        // these (no membership), so try every third-party source BEFORE
-        // asking the official API — otherwise each VIP track burns 1–2
-        // official songURL calls that can only return a trial, and the
-        // warm-up already spent one. The custom-only attempt above already
-        // ran; this covers the enabled built-ins, then all of them.
+        // these (no membership), so try the user's enabled third-party
+        // sources BEFORE asking the official API — otherwise each VIP track
+        // burns 1–2 official songURL calls that can only return a trial.
+        // Only sources the user left enabled are tried: a source switched
+        // off in settings is never used as a fallback.
         if isVIPOnly(track), allowsUnblock {
             if await resolveAndLoadUnblocked(track, generation: generation, resumeAt: resumeAt) { return }
-            guard generation == resolveGeneration else { return }
-            if await resolveAndLoadUnblocked(track, generation: generation, resumeAt: resumeAt, forceAllSources: true) { return }
             guard generation == resolveGeneration else { return }
         }
 
@@ -1039,13 +1052,9 @@ final class PlayerService: ObservableObject {
         guard generation == resolveGeneration else { return }
 
         // The service refused — try third-party sources (unblock-style).
+        // Only sources the user left enabled are tried.
         if resolvedURL == nil || data?.freeTrialInfo != nil, allowsUnblock {
             if await resolveAndLoadUnblocked(track, generation: generation, resumeAt: resumeAt) { return }
-            // VIP 兜底：自定义源已失败、自带源又被关掉时，最后再试一次全部
-            // 第三方源。宁可走酷我/酷狗整首播，也别只给 30 秒试听；用的
-            // 哪个源会弹提示，自定义源每次都优先试，好了会自动接管。
-            if isVIPOnly(track),
-               await resolveAndLoadUnblocked(track, generation: generation, resumeAt: resumeAt, forceAllSources: true) { return }
         }
         guard generation == resolveGeneration else { return }
 
@@ -1068,14 +1077,12 @@ final class PlayerService: ObservableObject {
         generation: Int,
         requiresActivePlayback: Bool = false,
         resumeAt: TimeInterval = 0,
-        onlyCustomSources: Bool = false,
-        forceAllSources: Bool = false
+        onlyCustomSources: Bool = false
     ) async -> Bool {
+        // 只用用户在设置里开启的源：关掉的源不再作为兜底偷跑。
         let enabledSources: Set<AudioSourceID> = onlyCustomSources
             ? [.custom]
-            : forceAllSources
-                ? [.custom, .pyncmd, .kugou, .kuwo]
-                : SettingsManager.shared.enabledAudioSourceIDs
+            : SettingsManager.shared.enabledAudioSourceIDs
         guard !enabledSources.isEmpty else { return false }
 
         guard generation == resolveGeneration,
@@ -1180,10 +1187,11 @@ final class PlayerService: ObservableObject {
             enabledSourceIDs: SettingsManager.shared.enabledAudioSourceIDs,
             allowsUnblock: allowsUnblock
         )
-        // VIP-only tracks: warm from third-party sources first (custom ->
-        // enabled built-ins -> all built-ins), so the window stores a full
-        // URL when any of them has the song — and the official API (which
-        // can only return a 30s trial for these) is not spent on warm-up.
+        // VIP-only tracks: warm from the user's enabled third-party sources
+        // first (custom first, then the built-ins left on), so the window
+        // stores a full URL when any of them has the song — and the official
+        // API (which can only return a 30s trial for these) is not spent on
+        // warm-up. Sources switched off in settings are never warmed.
         if isVIPOnly(track), allowsUnblock {
             let preferredSources: Set<AudioSourceID> = customSourcesEnabled
                 ? SettingsManager.shared.enabledAudioSourceIDs.union([.custom])
@@ -1202,20 +1210,8 @@ final class PlayerService: ObservableObject {
                                     quality: fingerprint.quality, thirdPartyQuality: fingerprint.thirdPartyQuality,
                                     enabledSourceIDs: fingerprint.enabledSourceIDs, allowsUnblock: fingerprint.allowsUnblock)
             }
-            let fallbackTry = await UnblockService.resolve(
-                track,
-                enabledSources: [.custom, .pyncmd, .kugou, .kuwo],
-                excluding: firstTry.attemptedSources,
-                customSources: CustomAudioSourceStore.shared.sources,
-                customQuality: SettingsManager.shared.thirdPartyQuality
-            )
-            guard !Task.isCancelled else { return nil }
-            if let unblocked = fallbackTry.source {
-                return WarmedSource(trackID: track.id, url: unblocked.url, isTrial: false, durationMS: nil,
-                                    servedQuality: nil, unblockSourceID: unblocked.id, unblockDisplayName: unblocked.displayName,
-                                    quality: fingerprint.quality, thirdPartyQuality: fingerprint.thirdPartyQuality,
-                                    enabledSourceIDs: fingerprint.enabledSourceIDs, allowsUnblock: fingerprint.allowsUnblock)
-            }
+            // 记下这次预热失败的源：点歌后 60 秒内不再为同一首歌重跑它们。
+            warmupFailedSources[track.id] = (sources: firstTry.attemptedSources, at: Date())
         }
 
         var data: SongURLData?
@@ -1261,6 +1257,12 @@ final class PlayerService: ObservableObject {
                                     quality: fingerprint.quality, thirdPartyQuality: fingerprint.thirdPartyQuality,
                                     enabledSourceIDs: fingerprint.enabledSourceIDs, allowsUnblock: fingerprint.allowsUnblock)
             }
+            // 预热失败的源也记下来，点歌时 60 秒内不再重跑。
+            let prior = warmupFailedSources[track.id]
+            warmupFailedSources[track.id] = (
+                sources: (prior?.sources ?? []).union(resolution.attemptedSources),
+                at: Date()
+            )
         }
         // Nothing else answered: the official trial URL still plays a snippet.
         if let url = officialURL {
@@ -1508,24 +1510,15 @@ final class PlayerService: ObservableObject {
             return
         }
 
-        // 第三方源之间切换也要断点续播，不能从头再放；VIP 歌在已开集合失败后继续走全源兜底。
+        // 第三方源之间切换也要断点续播，不能从头再放；只用用户开启的源。
         let resumeAt = progress > 1 ? progress : 0
         Task {
-            var loaded = await resolveAndLoadUnblocked(
+            let loaded = await resolveAndLoadUnblocked(
                 track,
                 generation: generation,
                 requiresActivePlayback: true,
                 resumeAt: resumeAt
             )
-            if !loaded, isVIPOnly(track) {
-                loaded = await resolveAndLoadUnblocked(
-                    track,
-                    generation: generation,
-                    requiresActivePlayback: true,
-                    resumeAt: resumeAt,
-                    forceAllSources: true
-                )
-            }
             guard isPlaying else { return }
             guard loaded else {
                 guard generation == resolveGeneration else { return }
