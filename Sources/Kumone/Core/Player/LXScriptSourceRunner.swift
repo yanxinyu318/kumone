@@ -412,6 +412,15 @@ final class CustomSourceLastFailure: @unchecked Sendable {
         return (reason, detail)
     }
 
+    /// 只看不取：让调用方判断这次失败是否不可恢复（无入口 / 无运行环境 /
+    /// 明确报“无效的音源”），决定要不要换低音质再试一次。
+    func peek() -> (reason: CustomSourceFailureReason, detail: String?)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let reason else { return nil }
+        return (reason, detail)
+    }
+
     /// 脱敏：去掉网址和过长的疑似密钥，只留一句能看懂的报错。
     private static func sanitizedDetail(_ text: String) -> String {
         var out = text
@@ -432,6 +441,11 @@ final class KumoneLXScriptRuntime {
     private let context: JSContext
     private let bridge: KumoneLXScriptBridge
     private var handlers: [String: JSValue] = [:]
+    /// 脚本 inited 事件上报的源列表（如 ["kg", "kw"]）。若其中没有 "wy"，
+    /// 脚本收到 source: "wy" 就会直接拒掉，报错里会把这份列表附上。
+    private var initedSources: [String] = []
+    private let initSemaphore = DispatchSemaphore(value: 0)
+    private var didReceiveInited = false
     /// 诊断用：最近一次 invokeRequest 失败的原因（nil 表示成功或尚未调用）。
     private(set) var lastFailureReason: CustomSourceFailureReason?
     /// 诊断用：最近一次 invokeRequest 的脚本报错原文（已脱敏，见 holder）。
@@ -605,17 +619,29 @@ final class KumoneLXScriptRuntime {
     func receive(event: String, payload: Any?) {
         guard event == "inited" else { return }
         if let dict = payload as? [String: Any], let sources = dict["sources"] as? [String: Any] {
-            lxScriptLog.debug("第三方脚本初始化：\(self.sourceID) sources=\(sources.keys.sorted().joined(separator: ","))")
+            initedSources = sources.keys.sorted()
         } else if let dict = payload as? NSDictionary,
                   let sources = dict["sources"] as? NSDictionary {
-            let names = sources.allKeys.compactMap { $0 as? String }.sorted().joined(separator: ",")
-            lxScriptLog.debug("第三方脚本初始化：\(self.sourceID) sources=\(names)")
+            initedSources = sources.allKeys.compactMap { $0 as? String }.sorted()
+        }
+        lxScriptLog.debug("第三方脚本初始化：\(self.sourceID) sources=\(self.initedSources.joined(separator: ","))")
+        if !didReceiveInited {
+            didReceiveInited = true
+            initSemaphore.signal()
         }
     }
 
     func invokeRequest(payload: [String: Any], timeout: TimeInterval = 12) -> Any? {
         lastFailureReason = nil
         lastFailureDetail = nil
+        // 脚本可能异步拉取远端配置后再注册 sources：首次调用最多等 inited
+        // 1.5 秒，避免 sources 尚未就绪就误报“无效的音源”。超时也不阻塞，
+        // 直接按原流程走。
+        if !didReceiveInited {
+            if initSemaphore.wait(timeout: .now() + 1.5) == .success {
+                initSemaphore.signal()
+            }
+        }
         let semaphore = DispatchSemaphore(value: 0)
         var result: Any?
         var failure: CustomSourceFailureReason?
@@ -628,10 +654,14 @@ final class KumoneLXScriptRuntime {
             resultLock.unlock()
             semaphore.signal()
         }
-        done.onReject = { message in
+        done.onReject = { [weak self] message in
             resultLock.lock()
             failure = .scriptError
-            failureDetail = message
+            if let supported = self?.initedSources, !supported.isEmpty, !supported.contains("wy") {
+                failureDetail = "\(message)（该脚本仅支持: \(supported.joined(separator: ","))）"
+            } else {
+                failureDetail = message
+            }
             resultLock.unlock()
             semaphore.signal()
         }
