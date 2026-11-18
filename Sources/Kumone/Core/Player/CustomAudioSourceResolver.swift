@@ -69,6 +69,11 @@ enum CustomAudioSourceResolver {
                 ) {
                     return resolved
                 }
+                // 若脚本本身无入口、运行环境失败或明确返回“无效的音源”，降级音质(128k)也会同样失败，直接终止重试。
+                if let snap = CustomSourceLastFailure.shared.peek(),
+                   snap.reason == .noRuntime || snap.reason == .noEntryPoint || (snap.detail?.contains("无效的音源") == true) {
+                    break
+                }
             }
             return nil
         }
