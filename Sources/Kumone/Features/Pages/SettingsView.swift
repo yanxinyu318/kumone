@@ -211,6 +211,10 @@ struct SettingsView: View {
                 Text("左滑下一首，右滑上一首")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Toggle("左滑歌词查看评论", isOn: $settings.swipeToComments)
+                Text("关闭后仍可在播放页菜单中「查看评论」")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 #endif
                 Toggle("显示歌词翻译", isOn: $settings.showLyricsTranslation)
                 Toggle("逐字歌词（卡拉OK）", isOn: $settings.verbatimLyrics)
